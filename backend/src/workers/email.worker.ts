@@ -3,6 +3,7 @@ import { bullMqConnectionOptions } from '../config/redis';
 import { EMAIL_QUEUE_NAME, EmailJobData } from '../services/queue.service';
 import { mailerService } from '../services/mailer.service';
 import { db } from '../config/db';
+import { elasticsearchService } from '../services/elasticsearch.service';
 
 export const startEmailWorker = (): Worker<EmailJobData> => {
   const worker = new Worker<EmailJobData>(
@@ -11,8 +12,9 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
       const { id, recipient, subject, body } = job.data;
       console.log(`\n⏳ [Worker] Processing Job ID: ${job.id} | Email ID: ${id} | To: ${recipient}`);
 
-      // Update state to 'processing'
+      // 1. Update state to 'processing' in PostgreSQL and Elasticsearch
       await db.updateEmail(id, { status: 'processing' });
+      await elasticsearchService.updateEmailStatus(id, { status: 'processing' });
 
       try {
         const result = await mailerService.sendMail({
@@ -26,10 +28,18 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
           console.log(`🔗 [Preview URL]: ${result.previewUrl}`);
         }
 
-        // Update state to 'sent'
+        const sentAt = new Date().toISOString();
+
+        // 2. Update state to 'sent' in PostgreSQL and Elasticsearch
         await db.updateEmail(id, {
           status: 'sent',
-          sent_at: new Date().toISOString(),
+          sent_at: sentAt,
+          preview_url: result.previewUrl,
+          error_message: null,
+        });
+        await elasticsearchService.updateEmailStatus(id, {
+          status: 'sent',
+          sent_at: sentAt,
           preview_url: result.previewUrl,
           error_message: null,
         });
@@ -42,11 +52,16 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
       } catch (error: any) {
         console.error(`❌ [Worker] Delivery failed for ${recipient} (Attempt ${job.attemptsMade + 1}/${job.opts.attempts}):`, error.message);
 
-        // If this is the final attempt or no attempts left
+        // 3. If this is the final attempt or no attempts left, update state to 'failed'
         if (job.attemptsMade + 1 >= (job.opts.attempts || 1)) {
+          const errorMessage = error.message || 'Unknown delivery failure';
           await db.updateEmail(id, {
             status: 'failed',
-            error_message: error.message || 'Unknown delivery failure',
+            error_message: errorMessage,
+          });
+          await elasticsearchService.updateEmailStatus(id, {
+            status: 'failed',
+            error_message: errorMessage,
           });
         }
 

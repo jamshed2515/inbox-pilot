@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { db, EmailRecord } from '../config/db';
 import { queueService } from '../services/queue.service';
 import { mailerService } from '../services/mailer.service';
+import { elasticsearchService } from '../services/elasticsearch.service';
+
 
 const singleEmailSchema = z.object({
   recipient: z.string().email('Please provide a valid recipient email address'),
@@ -62,10 +64,13 @@ export const scheduleEmail = async (req: Request, res: Response): Promise<void> 
       updated_at: new Date().toISOString(),
     };
 
-    // 1. Save to Database
+    // 1. Save to Database (PostgreSQL is source of truth)
     await db.insertEmail(newRecord);
 
-    // 2. Add to BullMQ Queue
+    // 2. Index in Elasticsearch
+    await elasticsearchService.indexEmail(newRecord);
+
+    // 3. Add to BullMQ Queue
     const job = await queueService.addEmailJob(
       {
         id: emailId,
@@ -144,6 +149,7 @@ export const batchScheduleEmails = async (req: Request, res: Response): Promise<
       };
 
       await db.insertEmail(record);
+      await elasticsearchService.indexEmail(record);
       await queueService.addEmailJob(
         {
           id: emailId,
@@ -243,6 +249,12 @@ export const cancelEmail = async (req: Request, res: Response): Promise<void> =>
       error_message: 'Cancelled by user',
     });
 
+    // Update Elasticsearch
+    await elasticsearchService.updateEmailStatus(id, {
+      status: 'cancelled',
+      error_message: 'Cancelled by user',
+    });
+
     res.json({
       success: true,
       message: 'Scheduled email cancelled successfully',
@@ -269,12 +281,22 @@ export const retryEmail = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
+    const scheduledAt = new Date().toISOString();
+
     // Re-schedule immediately
     await db.updateEmail(id, {
       status: 'scheduled',
       error_message: null,
-      scheduled_at: new Date().toISOString(),
+      scheduled_at: scheduledAt,
     });
+
+    // Update Elasticsearch
+    await elasticsearchService.updateEmailStatus(id, {
+      status: 'scheduled',
+      error_message: null,
+      scheduled_at: scheduledAt,
+    });
+
 
     await queueService.addEmailJob(
       {
@@ -320,6 +342,10 @@ export const getStats = async (_req: Request, res: Response): Promise<void> => {
         queue: queueStats,
         mailer: mailerService.getAccountInfo(),
         storageType: 'PostgreSQL 16',
+        elasticsearch: {
+          available: elasticsearchService.isAvailable(),
+          index: process.env.ELASTICSEARCH_INDEX || 'emails',
+        },
       },
     });
   } catch (error: any) {
@@ -334,14 +360,16 @@ export const searchEmails = async (req: Request, res: Response): Promise<void> =
   try {
     const q = String(req.query.q || '').trim();
     if (!q) {
-      res.json({ success: true, count: 0, data: [] });
+      res.json({ success: true, count: 0, source: 'elasticsearch', data: [] });
       return;
     }
 
-    const results = await db.searchEmails(q);
+    // Query Elasticsearch instead of PostgreSQL
+    const { data: results, source } = await elasticsearchService.searchEmails(q);
     res.json({
       success: true,
       count: results.length,
+      source,
       data: results,
     });
   } catch (error: any) {
@@ -351,3 +379,4 @@ export const searchEmails = async (req: Request, res: Response): Promise<void> =
     });
   }
 };
+

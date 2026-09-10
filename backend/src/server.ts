@@ -3,14 +3,18 @@ import { env } from './config/env';
 import { initDb, pgPool } from './config/db';
 import { startEmailWorker } from './workers/email.worker';
 import { redisConnection } from './config/redis';
+import { initElasticsearch, esClient } from './services/elasticsearch.service';
 
 let worker: ReturnType<typeof startEmailWorker> | null = null;
 
 const startServer = async () => {
-  // Initialize Database Schema
+  // 1. Initialize PostgreSQL Relational Database Schema
   await initDb();
 
-  // Start BullMQ Worker
+  // 2. Initialize Elasticsearch Index & Connectivity
+  await initElasticsearch();
+
+  // 3. Start BullMQ Worker
   worker = startEmailWorker();
 
   const server = app.listen(env.PORT, () => {
@@ -38,12 +42,16 @@ const startServer = async () => {
       console.log('Closing Redis connection...');
       await redisConnection.quit();
 
+      console.log('Closing Elasticsearch connection...');
+      await esClient.close();
+
       console.log('Closing PostgreSQL pool...');
       await pgPool.end();
 
       console.log('Graceful shutdown complete.');
       process.exit(0);
     });
+
 
     setTimeout(() => {
       console.error('Forcefully terminating process after timeout.');

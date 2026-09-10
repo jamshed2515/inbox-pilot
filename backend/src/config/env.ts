@@ -24,7 +24,8 @@ const envSchema = z.object({
   REDIS_URL: z.string().default('redis://localhost:6379'),
 
   // Elasticsearch
-  ELASTICSEARCH_NODE: z.string().default('http://localhost:9200'),
+  ELASTICSEARCH_NODE: z.string().default('http://127.0.0.1:9200'),
+  ELASTICSEARCH_INDEX: z.string().default('emails'),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
