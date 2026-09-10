@@ -2,7 +2,8 @@ const http = require('http');
 const { Pool } = require('pg');
 const Redis = require('ioredis');
 
-const redis = new Redis('redis://127.0.0.1:6379');
+const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+const redis = new Redis(REDIS_URL);
 const pool = new Pool({ connectionString: 'postgresql://postgres:postgres@localhost:5433/email_scheduler' });
 
 let authToken = '';

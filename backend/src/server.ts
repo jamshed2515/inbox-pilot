@@ -2,7 +2,7 @@ import app from './app';
 import { env } from './config/env';
 import { initDb, pgPool, db } from './config/db';
 import { startEmailWorker } from './workers/email.worker';
-import { redisConnection } from './config/redis';
+import { redisConnection, redisSummary } from './config/redis';
 import { initElasticsearch, esClient } from './services/elasticsearch.service';
 import { authService } from './services/auth.service';
 
@@ -56,6 +56,7 @@ const startServer = async () => {
     console.log(`🌍 Environment:     ${env.NODE_ENV}`);
     console.log(`🩺 Health:          http://localhost:${env.PORT}/api/health`);
     console.log(`✉️  Scheduler:       http://localhost:${env.PORT}/api/emails/stats`);
+    console.log(`📦 Redis Target:    ${redisSummary}`);
     if (isGoogleConfigured) {
       console.log(`🔑 Google OAuth:    ✅ Configured (Client ID: ${maskedClientId})`);
       console.log(`🔗 Redirect URI:    ${env.GOOGLE_REDIRECT_URI}`);
