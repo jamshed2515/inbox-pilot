@@ -26,6 +26,9 @@ import {
   Bell,
   Hash,
   LogOut,
+  Upload,
+  List,
+  Grid,
 } from 'lucide-react';
 
 export interface UserProfile {
@@ -156,8 +159,42 @@ export default function App() {
   const [scheduleType, setScheduleType] = useState<'delay' | 'datetime'>('delay');
   const [delaySeconds, setDelaySeconds] = useState<number>(15);
   const [scheduledAt, setScheduledAt] = useState<string>('');
+  const [staggerSeconds, setStaggerSeconds] = useState<number>(2);
+  const [queueViewMode, setQueueViewMode] = useState<'table' | 'cards'>('table');
   const [composerSubmitting, setComposerSubmitting] = useState<boolean>(false);
   const [actionMessage, setActionMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  // CSV / TXT Recipient File Upload
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
+
+      const emailMatches = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+      const uniqueEmails = Array.from(new Set(emailMatches.map((em) => em.trim().toLowerCase())));
+
+      if (uniqueEmails.length === 0) {
+        showNotification('No valid email addresses found in file', 'error');
+        return;
+      }
+
+      setRecipient(uniqueEmails.join('\n'));
+      showNotification(`📄 Loaded ${uniqueEmails.length} recipients from ${file.name}!`);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  // Helper to resolve sender label
+  const getSenderLabel = (senderId?: string | null) => {
+    if (!senderId) return 'Default Outreach Team';
+    const s = senders.find((snd) => snd.id === senderId);
+    return s ? `${s.name} <${s.email}>` : 'Default Outreach Team';
+  };
 
   // Batch Form State
   const [batchRecipients, setBatchRecipients] = useState<string>(
@@ -394,38 +431,78 @@ export default function App() {
     }
   };
 
-  // Schedule Single Email
+  // Schedule Email (Single or Batch with Staggering)
   const handleScheduleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setComposerSubmitting(true);
 
+    const emailList = recipient
+      .split(/[\n,;]+/)
+      .map((em) => em.trim())
+      .filter((em) => em.length > 0 && em.includes('@'));
+
+    if (emailList.length === 0) {
+      showNotification('Please enter at least one valid recipient email address', 'error');
+      setComposerSubmitting(false);
+      return;
+    }
+
     try {
-      const payload: any = {
-        recipient,
-        subject,
-        body,
-      };
+      if (emailList.length === 1) {
+        // Single Email Scheduling
+        const payload: any = {
+          recipient: emailList[0],
+          subject,
+          body,
+        };
 
-      if (selectedSenderId) {
-        payload.senderId = selectedSenderId;
+        if (selectedSenderId) {
+          payload.senderId = selectedSenderId;
+        }
+
+        if (scheduleType === 'delay') {
+          payload.delaySeconds = Number(delaySeconds);
+        } else if (scheduledAt) {
+          payload.scheduledAt = new Date(scheduledAt).toISOString();
+        }
+
+        const res = await fetch('/api/emails/schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || 'Scheduling failed');
+
+        showNotification(data.message || 'Email scheduled successfully!');
+      } else {
+        // Multiple / CSV Batch Scheduling
+        const payload = {
+          senderId: selectedSenderId || undefined,
+          emails: emailList.map((addr) => ({
+            recipient: addr,
+            subject,
+            body,
+            senderId: selectedSenderId || undefined,
+            delaySeconds: scheduleType === 'delay' ? Number(delaySeconds) : undefined,
+            scheduledAt: scheduleType === 'datetime' && scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
+          })),
+          staggerSeconds: Number(staggerSeconds || 2),
+        };
+
+        const res = await fetch('/api/emails/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || 'Batch scheduling failed');
+
+        showNotification(`🎉 Scheduled batch of ${emailList.length} emails with ${staggerSeconds}s stagger!`);
       }
 
-      if (scheduleType === 'delay') {
-        payload.delaySeconds = Number(delaySeconds);
-      } else if (scheduledAt) {
-        payload.scheduledAt = new Date(scheduledAt).toISOString();
-      }
-
-      const res = await fetch('/api/emails/schedule', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || 'Scheduling failed');
-
-      showNotification(data.message || 'Email scheduled successfully!');
       fetchData();
       setActiveTab('queue');
     } catch (err: any) {
@@ -986,6 +1063,36 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2">
+                {/* View Switcher: Table vs Cards */}
+                <div className="flex items-center bg-slate-900/90 border border-slate-800 rounded-lg p-0.5 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setQueueViewMode('table')}
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-semibold transition ${
+                      queueViewMode === 'table'
+                        ? 'bg-teal-500 text-slate-950 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                    title="Table View"
+                  >
+                    <List className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Table</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQueueViewMode('cards')}
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-semibold transition ${
+                      queueViewMode === 'cards'
+                        ? 'bg-teal-500 text-slate-950 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                    title="Cards Grid View"
+                  >
+                    <Grid className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Cards</span>
+                  </button>
+                </div>
+
                 <a
                   href="http://localhost:5000/admin/queues"
                   target="_blank"
@@ -993,7 +1100,7 @@ export default function App() {
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold text-xs transition"
                 >
                   <Layers className="w-3.5 h-3.5 text-amber-400" />
-                  Open Bull Board (/admin/queues)
+                  <span className="hidden md:inline">Open</span> Bull Board
                   <ExternalLink className="w-3 h-3 opacity-70" />
                 </a>
 
@@ -1078,7 +1185,84 @@ export default function App() {
                   Schedule a Test Email (15s delay)
                 </button>
               </div>
+            ) : queueViewMode === 'table' ? (
+              /* Scheduled Queue Table View */
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/40 overflow-hidden shadow-xl">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-900/80 text-slate-400 font-semibold border-b border-slate-800">
+                      <tr>
+                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4">Recipient</th>
+                        <th className="py-3 px-4">Subject</th>
+                        <th className="py-3 px-4">Sender</th>
+                        <th className="py-3 px-4">Scheduled For</th>
+                        <th className="py-3 px-4">Countdown</th>
+                        <th className="py-3 px-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {filteredScheduled.map((item) => (
+                        <tr key={item.id} className="hover:bg-slate-800/30 transition">
+                          {/* Status */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 font-semibold text-[11px]">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                              Scheduled
+                            </span>
+                          </td>
+
+                          {/* Recipient */}
+                          <td className="py-3.5 px-4 font-mono text-teal-300 whitespace-nowrap">
+                            {item.recipient}
+                          </td>
+
+                          {/* Subject */}
+                          <td className="py-3.5 px-4 font-medium text-white max-w-xs truncate" title={item.subject}>
+                            {item.subject}
+                          </td>
+
+                          {/* Sender */}
+                          <td className="py-3.5 px-4 text-slate-300 font-mono text-[11px] max-w-xs truncate" title={getSenderLabel(item.sender_id)}>
+                            {getSenderLabel(item.sender_id)}
+                          </td>
+
+                          {/* Scheduled Time */}
+                          <td className="py-3.5 px-4 text-slate-400 whitespace-nowrap font-mono">
+                            {new Date(item.scheduled_at).toLocaleTimeString()}
+                          </td>
+
+                          {/* Countdown */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <span className="font-mono text-amber-300 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/50 text-[11px]">
+                              {formatCountdown(item.scheduled_at)}
+                            </span>
+                          </td>
+
+                          {/* Actions */}
+                          <td className="py-3.5 px-4 text-right space-x-2 whitespace-nowrap">
+                            <button
+                              onClick={() => setPreviewEmail(item)}
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium transition"
+                            >
+                              View Body
+                            </button>
+                            <button
+                              onClick={() => handleCancelEmail(item.id)}
+                              className="p-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/40 text-xs transition"
+                              title="Cancel scheduled job"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             ) : (
+              /* Scheduled Queue Cards View */
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {filteredScheduled.map((item) => (
                   <div
@@ -1101,6 +1285,9 @@ export default function App() {
                       </h4>
                       <p className="text-xs text-teal-400 font-mono truncate" title={item.recipient}>
                         To: {item.recipient}
+                      </p>
+                      <p className="text-[11px] text-slate-400 font-mono truncate" title={getSenderLabel(item.sender_id)}>
+                        From: {getSenderLabel(item.sender_id)}
                       </p>
                     </div>
 
@@ -1182,6 +1369,7 @@ export default function App() {
                         <th className="py-3 px-4">Status</th>
                         <th className="py-3 px-4">Recipient</th>
                         <th className="py-3 px-4">Subject</th>
+                        <th className="py-3 px-4">Sender</th>
                         <th className="py-3 px-4">Delivered At</th>
                         <th className="py-3 px-4 text-right">Actions / Sandbox</th>
                       </tr>
@@ -1223,6 +1411,11 @@ export default function App() {
                           {/* Subject */}
                           <td className="py-3.5 px-4 font-medium text-white max-w-xs truncate" title={item.subject}>
                             {item.subject}
+                          </td>
+
+                          {/* Sender */}
+                          <td className="py-3.5 px-4 text-slate-300 font-mono text-[11px] max-w-xs truncate" title={getSenderLabel(item.sender_id)}>
+                            {getSenderLabel(item.sender_id)}
                           </td>
 
                           {/* Delivered At */}
@@ -1316,16 +1509,18 @@ export default function App() {
               </div>
 
               <form onSubmit={handleScheduleSubmit} className="space-y-4">
-                {/* Sender Selector */}
+                {/* Sender Selector & Hourly Limit Info */}
                 {senders.length > 0 && (
                   <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-                      <span className="flex items-center gap-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                         <Users className="w-3.5 h-3.5 text-teal-400" />
                         Outbound Email Sender
+                      </label>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                        Quota: 200 emails / hr (Phase D Rate Limiting)
                       </span>
-                      <span className="text-[10px] font-mono text-teal-400">Phase C Multi-Sender</span>
-                    </label>
+                    </div>
                     <select
                       value={selectedSenderId}
                       onChange={(e) => setSelectedSenderId(e.target.value)}
@@ -1340,17 +1535,45 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Recipient */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-slate-300">Recipient Email Address</label>
-                  <input
-                    type="email"
+                {/* Recipient Input with CSV/TXT Upload & Recipient Count */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                      <Mail className="w-3.5 h-3.5 text-teal-400" />
+                      Recipient(s) — Email or CSV/TXT List
+                    </label>
+
+                    <div className="flex items-center gap-2">
+                      {/* Recipient Count Badge */}
+                      <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-full bg-teal-500/10 text-teal-300 border border-teal-500/20">
+                        {recipient.split(/[\n,;]+/).filter((e) => e.trim().includes('@')).length} recipient(s)
+                      </span>
+
+                      {/* CSV / TXT Upload Button */}
+                      <label className="cursor-pointer inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-teal-300 border border-slate-700 text-xs font-medium transition shadow-sm">
+                        <Upload className="w-3 h-3 text-teal-400" />
+                        <span>Upload CSV / TXT</span>
+                        <input
+                          type="file"
+                          accept=".csv,.txt"
+                          onChange={handleFileUpload}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <textarea
+                    rows={recipient.includes('\n') ? 4 : 2}
                     required
                     value={recipient}
                     onChange={(e) => setRecipient(e.target.value)}
-                    placeholder="user@example.com"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-white focus:outline-none focus:border-teal-500 font-mono"
-                  />
+                    placeholder="Enter email, or paste multiple comma/newline-separated addresses..."
+                    className="w-full p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-white focus:outline-none focus:border-teal-500 font-mono"
+                  ></textarea>
+                  <p className="text-[11px] text-slate-500">
+                    Supports individual addresses, comma-separated lists, or bulk CSV/TXT imports.
+                  </p>
                 </div>
 
                 {/* Subject */}
@@ -1460,15 +1683,45 @@ export default function App() {
                       />
                     </div>
                   )}
+
+                  {/* Delay Between Emails (Stagger) - active when > 1 recipient */}
+                  {recipient.split(/[\n,;]+/).filter((e) => e.trim().includes('@')).length > 1 && (
+                    <div className="p-3.5 rounded-xl border border-teal-500/30 bg-teal-950/20 space-y-2">
+                      <div className="flex items-center justify-between text-xs font-semibold text-teal-300">
+                        <span className="flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-teal-400" />
+                          Delay Between Emails (Interval Stagger)
+                        </span>
+                        <span className="font-mono text-[10px] text-teal-400">Respects SMTP Provider Quotas</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="number"
+                          min="1"
+                          max="300"
+                          value={staggerSeconds}
+                          onChange={(e) => setStaggerSeconds(Number(e.target.value))}
+                          className="w-24 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white font-mono"
+                        />
+                        <span className="text-xs text-slate-400">
+                          seconds between consecutive emails
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <button
                   type="submit"
                   disabled={composerSubmitting}
-                  className="w-full py-3 rounded-xl bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-slate-950 font-extrabold text-sm shadow-xl shadow-teal-500/20 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                  className="w-full py-3.5 rounded-xl bg-gradient-to-r from-teal-500 to-indigo-500 hover:from-teal-400 hover:to-indigo-400 text-slate-950 font-extrabold text-sm shadow-xl shadow-teal-500/20 transition flex items-center justify-center gap-2 disabled:opacity-50"
                 >
                   <Send className="w-4 h-4" />
-                  {composerSubmitting ? 'Enqueueing Job in BullMQ...' : 'Schedule Email Job'}
+                  {composerSubmitting
+                    ? 'Scheduling Delivery...'
+                    : recipient.split(/[\n,;]+/).filter((e) => e.trim().includes('@')).length > 1
+                    ? `Schedule ${recipient.split(/[\n,;]+/).filter((e) => e.trim().includes('@')).length} Emails (Staggered Batch)`
+                    : 'Schedule Email Delivery'}
                 </button>
               </form>
             </div>
