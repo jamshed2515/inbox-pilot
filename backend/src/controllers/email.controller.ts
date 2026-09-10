@@ -319,7 +319,7 @@ export const getStats = async (_req: Request, res: Response): Promise<void> => {
         database: dbStats,
         queue: queueStats,
         mailer: mailerService.getAccountInfo(),
-        storageType: db.isPostgres() ? 'PostgreSQL 16' : 'Resilient JSON Store',
+        storageType: 'PostgreSQL 16',
       },
     });
   } catch (error: any) {
