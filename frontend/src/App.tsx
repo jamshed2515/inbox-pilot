@@ -1,0 +1,1198 @@
+import { useState, useEffect, useCallback } from 'react';
+import {
+  Mail,
+  Calendar,
+  Clock,
+  Send,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  ExternalLink,
+  RefreshCw,
+  Layers,
+  Search,
+  Trash2,
+  RotateCcw,
+  PlusCircle,
+  Sparkles,
+  Zap,
+  Eye,
+  X,
+  Users,
+  Check,
+  Radio,
+} from 'lucide-react';
+
+interface EmailRecord {
+  id: string;
+  job_id: string;
+  recipient: string;
+  subject: string;
+  body: string;
+  status: 'scheduled' | 'processing' | 'sent' | 'failed' | 'cancelled';
+  scheduled_at: string;
+  sent_at: string | null;
+  error_message: string | null;
+  preview_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface StatsData {
+  database: {
+    total: number;
+    scheduled: number;
+    processing: number;
+    sent: number;
+    failed: number;
+    cancelled: number;
+  };
+  queue: {
+    waiting: number;
+    active: number;
+    delayed: number;
+    completed: number;
+    failed: number;
+    total: number;
+  };
+  mailer: {
+    type: string;
+    user: string;
+  };
+  storageType: string;
+}
+
+const EMAIL_TEMPLATES = [
+  {
+    name: '🎉 Welcome Onboarding',
+    subject: 'Welcome to ReachInbox AI Platform!',
+    body: `<h2>Welcome aboard!</h2>
+<p>Hi there,</p>
+<p>Thank you for testing the <strong>ReachInbox Email Job Scheduler</strong>.</p>
+<p>Your scheduled task was processed successfully by our high-performance <strong>BullMQ + Redis</strong> worker pipeline.</p>
+<hr />
+<p style="color: #64748b; font-size: 13px;">ReachInbox Automated Delivery System</p>`,
+  },
+  {
+    name: '📊 Weekly Performance Report',
+    subject: 'Your Weekly Outbound Email Campaign Analytics',
+    body: `<h3>Outbound Campaign Performance</h3>
+<p>Here is your campaign delivery breakdown for this cycle:</p>
+<ul>
+  <li><strong>Delivery Success Rate:</strong> 99.8%</li>
+  <li><strong>Average Queue Latency:</strong> 124ms</li>
+  <li><strong>Worker Concurrency:</strong> 5 concurrent threads</li>
+</ul>
+<p>Keep up the great outreach momentum!</p>`,
+  },
+  {
+    name: '⚡ Product Launch Invitation',
+    subject: 'Exclusive VIP Access: Next-Gen Cold Email Automation',
+    body: `<h2>You are invited to the Private Beta!</h2>
+<p>We are unveiling our next-generation email sequencer with native BullMQ queue persistence, AI sentiment categorization, and real-time delivery insights.</p>
+<p>Check out your sandbox preview below.</p>`,
+  },
+];
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<'queue' | 'history' | 'composer' | 'batch'>('queue');
+  const [scheduledEmails, setScheduledEmails] = useState<EmailRecord[]>([]);
+  const [emailHistory, setEmailHistory] = useState<EmailRecord[]>([]);
+  const [stats, setStats] = useState<StatsData | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [backendOnline, setBackendOnline] = useState<boolean>(true);
+  const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [historyFilter, setHistoryFilter] = useState<string>('all');
+  const [nowTime, setNowTime] = useState<number>(Date.now());
+
+  // Composer Form State
+  const [recipient, setRecipient] = useState<string>('alex.founder@reachinbox.ai');
+  const [subject, setSubject] = useState<string>('Welcome to ReachInbox Scheduler!');
+  const [body, setBody] = useState<string>(EMAIL_TEMPLATES[0].body);
+  const [scheduleType, setScheduleType] = useState<'delay' | 'datetime'>('delay');
+  const [delaySeconds, setDelaySeconds] = useState<number>(15);
+  const [scheduledAt, setScheduledAt] = useState<string>('');
+  const [composerSubmitting, setComposerSubmitting] = useState<boolean>(false);
+  const [actionMessage, setActionMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  // Batch Form State
+  const [batchRecipients, setBatchRecipients] = useState<string>(
+    'sarah.cto@acme.com\njohn.doe@innovate.co\nemily.v@growthlab.io'
+  );
+  const [batchSubject, setBatchSubject] = useState<string>('Exclusive Invitation: ReachInbox Developer Beta');
+  const [batchBody, setBatchBody] = useState<string>(
+    '<p>Hi there,</p><p>We are pleased to invite you to our high-scale queue testing pilot.</p>'
+  );
+  const [batchStagger, setBatchStagger] = useState<number>(3);
+  const [batchBaseDelay, setBatchBaseDelay] = useState<number>(10);
+  const [batchSubmitting, setBatchSubmitting] = useState<boolean>(false);
+
+  // Modal Email Preview
+  const [previewEmail, setPreviewEmail] = useState<EmailRecord | null>(null);
+
+  // Update current time tick for live countdowns
+  useEffect(() => {
+    const timer = setInterval(() => setNowTime(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
+    setActionMessage({ text, type });
+    setTimeout(() => {
+      setActionMessage((prev) => (prev?.text === text ? null : prev));
+    }, 5000);
+  };
+
+  // Fetch all data
+  const fetchData = useCallback(async () => {
+    try {
+      const [statsRes, schedRes, histRes] = await Promise.all([
+        fetch('/api/emails/stats'),
+        fetch('/api/emails/scheduled'),
+        fetch(`/api/emails/history?status=${historyFilter}`),
+      ]);
+
+      if (statsRes.ok) {
+        const data = await statsRes.json();
+        setStats(data.data);
+        setBackendOnline(true);
+      } else {
+        setBackendOnline(false);
+      }
+
+      if (schedRes.ok) {
+        const data = await schedRes.json();
+        setScheduledEmails(data.data || []);
+      }
+
+      if (histRes.ok) {
+        const data = await histRes.json();
+        setEmailHistory(data.data || []);
+      }
+    } catch {
+      setBackendOnline(false);
+    }
+  }, [historyFilter]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // Auto-polling effect (every 3.5 seconds)
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(() => {
+      fetchData();
+    }, 3500);
+    return () => clearInterval(interval);
+  }, [autoRefresh, fetchData]);
+
+  // Schedule Single Email
+  const handleScheduleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setComposerSubmitting(true);
+
+    try {
+      const payload: any = {
+        recipient,
+        subject,
+        body,
+      };
+
+      if (scheduleType === 'delay') {
+        payload.delaySeconds = Number(delaySeconds);
+      } else if (scheduledAt) {
+        payload.scheduledAt = new Date(scheduledAt).toISOString();
+      }
+
+      const res = await fetch('/api/emails/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Scheduling failed');
+
+      showNotification(data.message || 'Email scheduled successfully!');
+      fetchData();
+      setActiveTab('queue');
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    } finally {
+      setComposerSubmitting(false);
+    }
+  };
+
+  // Batch Schedule Submit
+  const handleBatchSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBatchSubmitting(true);
+
+    const emailList = batchRecipients
+      .split(/[\n,;]+/)
+      .map((e) => e.trim())
+      .filter((e) => e.length > 0 && e.includes('@'));
+
+    if (emailList.length === 0) {
+      showNotification('Please enter at least one valid email address', 'error');
+      setBatchSubmitting(false);
+      return;
+    }
+
+    try {
+      const payload = {
+        emails: emailList.map((addr) => ({
+          recipient: addr,
+          subject: batchSubject,
+          body: batchBody,
+          delaySeconds: Number(batchBaseDelay),
+        })),
+        staggerSeconds: Number(batchStagger),
+      };
+
+      const res = await fetch('/api/emails/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Batch scheduling failed');
+
+      showNotification(`Batch of ${emailList.length} emails scheduled successfully!`);
+      fetchData();
+      setActiveTab('queue');
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
+
+  // Cancel Scheduled Email
+  const handleCancelEmail = async (id: string) => {
+    if (!confirm('Are you sure you want to cancel this scheduled email?')) return;
+    try {
+      const res = await fetch(`/api/emails/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Failed to cancel');
+      showNotification('Scheduled email cancelled.');
+      fetchData();
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  // Retry Failed Email
+  const handleRetryEmail = async (id: string) => {
+    try {
+      const res = await fetch(`/api/emails/${id}/retry`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Retry failed');
+      showNotification('Email re-queued for immediate delivery!');
+      fetchData();
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  // Filtered lists
+  const filteredScheduled = scheduledEmails.filter((item) => {
+    const q = searchQuery.toLowerCase();
+    return (
+      item.recipient.toLowerCase().includes(q) ||
+      item.subject.toLowerCase().includes(q)
+    );
+  });
+
+  const filteredHistory = emailHistory.filter((item) => {
+    const q = searchQuery.toLowerCase();
+    return (
+      item.recipient.toLowerCase().includes(q) ||
+      item.subject.toLowerCase().includes(q)
+    );
+  });
+
+  // Calculate countdown time string
+  const formatCountdown = (scheduledIso: string) => {
+    const diffMs = new Date(scheduledIso).getTime() - nowTime;
+    if (diffMs <= 0) return 'Sending now...';
+    const totalSecs = Math.floor(diffMs / 1000);
+    const mins = Math.floor(totalSecs / 60);
+    const secs = totalSecs % 60;
+    if (mins === 0) return `in ${secs}s`;
+    return `in ${mins}m ${secs}s`;
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-teal-500/30">
+      {/* Top Navigation Bar */}
+      <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-teal-400 to-indigo-500 flex items-center justify-center shadow-lg shadow-teal-500/20">
+              <Mail className="w-5 h-5 text-slate-950" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-extrabold text-white tracking-tight text-lg">ReachInbox</span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-teal-500/10 text-teal-300 border border-teal-500/20">
+                  Email Job Scheduler
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-3">
+            {/* Auto Refresh Toggle */}
+            <button
+              onClick={() => setAutoRefresh(!autoRefresh)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${
+                autoRefresh
+                  ? 'bg-teal-950/60 text-teal-300 border-teal-800/80'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}
+              title="Toggle Live 3s Polling"
+            >
+              <Radio className={`w-3.5 h-3.5 ${autoRefresh ? 'text-teal-400 animate-pulse' : ''}`} />
+              <span className="hidden sm:inline">{autoRefresh ? 'Live Sync ON' : 'Live Sync OFF'}</span>
+            </button>
+
+            {/* Manual Refresh Button */}
+            <button
+              onClick={() => {
+                setLoading(true);
+                fetchData().finally(() => setLoading(false));
+              }}
+              disabled={loading}
+              className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition"
+              title="Refresh Data"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-teal-400' : ''}`} />
+            </button>
+
+            {/* Status Indicator */}
+            <div className="flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  backendOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'
+                }`}
+              ></span>
+              <span className="text-slate-300">{backendOnline ? 'BullMQ Active' : 'Offline'}</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Floating Alert Notification */}
+      {actionMessage && (
+        <div className="fixed top-20 right-6 z-50 animate-in fade-in slide-in-from-top-4 duration-200">
+          <div
+            className={`rounded-xl border px-4 py-3 shadow-2xl flex items-center space-x-3 backdrop-blur-md ${
+              actionMessage.type === 'success'
+                ? 'bg-emerald-950/90 border-emerald-700 text-emerald-200'
+                : 'bg-rose-950/90 border-rose-700 text-rose-200'
+            }`}
+          >
+            {actionMessage.type === 'success' ? (
+              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+            ) : (
+              <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
+            )}
+            <span className="text-xs font-medium">{actionMessage.text}</span>
+            <button
+              onClick={() => setActionMessage(null)}
+              className="text-slate-400 hover:text-white ml-2"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Main Container */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        {/* Live Metrics Grid */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+          {/* Scheduled in Queue */}
+          <div className="rounded-2xl border border-slate-800/90 bg-slate-900/40 p-4 relative overflow-hidden backdrop-blur-sm">
+            <div className="absolute top-0 right-0 p-3 opacity-10 text-amber-400 pointer-events-none">
+              <Clock className="w-16 h-16" />
+            </div>
+            <div className="flex items-center justify-between text-xs text-slate-400 font-medium">
+              <span>Scheduled Queue</span>
+              <Clock className="w-4 h-4 text-amber-400" />
+            </div>
+            <div className="mt-2 text-2xl sm:text-3xl font-black text-amber-300 font-mono">
+              {stats?.queue.delayed ?? scheduledEmails.length}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">Pending Delayed Jobs</div>
+          </div>
+
+          {/* Delivered Successfully */}
+          <div className="rounded-2xl border border-slate-800/90 bg-slate-900/40 p-4 relative overflow-hidden backdrop-blur-sm">
+            <div className="absolute top-0 right-0 p-3 opacity-10 text-emerald-400 pointer-events-none">
+              <CheckCircle2 className="w-16 h-16" />
+            </div>
+            <div className="flex items-center justify-between text-xs text-slate-400 font-medium">
+              <span>Delivered</span>
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div className="mt-2 text-2xl sm:text-3xl font-black text-emerald-400 font-mono">
+              {stats?.database.sent ?? 0}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">Sent via Nodemailer</div>
+          </div>
+
+          {/* Failed / Retrying */}
+          <div className="rounded-2xl border border-slate-800/90 bg-slate-900/40 p-4 relative overflow-hidden backdrop-blur-sm">
+            <div className="absolute top-0 right-0 p-3 opacity-10 text-rose-400 pointer-events-none">
+              <XCircle className="w-16 h-16" />
+            </div>
+            <div className="flex items-center justify-between text-xs text-slate-400 font-medium">
+              <span>Failed</span>
+              <XCircle className="w-4 h-4 text-rose-400" />
+            </div>
+            <div className="mt-2 text-2xl sm:text-3xl font-black text-rose-400 font-mono">
+              {stats?.database.failed ?? 0}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">Retry backoff enabled</div>
+          </div>
+
+          {/* Total Jobs */}
+          <div className="rounded-2xl border border-slate-800/90 bg-slate-900/40 p-4 relative overflow-hidden backdrop-blur-sm">
+            <div className="absolute top-0 right-0 p-3 opacity-10 text-cyan-400 pointer-events-none">
+              <Layers className="w-16 h-16" />
+            </div>
+            <div className="flex items-center justify-between text-xs text-slate-400 font-medium">
+              <span>Total Processed</span>
+              <Layers className="w-4 h-4 text-cyan-400" />
+            </div>
+            <div className="mt-2 text-2xl sm:text-3xl font-black text-cyan-300 font-mono">
+              {stats?.database.total ?? 0}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1 truncate">
+              {stats?.storageType || 'PostgreSQL'}
+            </div>
+          </div>
+
+          {/* Ethereal Sandbox */}
+          <div className="col-span-2 lg:col-span-1 rounded-2xl border border-teal-900/40 bg-gradient-to-br from-slate-900/80 to-teal-950/20 p-4">
+            <div className="flex items-center justify-between text-xs text-teal-400 font-medium">
+              <span>SMTP Sandbox</span>
+              <Sparkles className="w-4 h-4 text-teal-400" />
+            </div>
+            <div className="mt-2 text-sm font-semibold text-white truncate">
+              Ethereal Test Mail
+            </div>
+            <div className="text-[11px] text-slate-400 mt-1 truncate font-mono">
+              {stats?.mailer.user || 'Auto-Provisioned'}
+            </div>
+          </div>
+        </div>
+
+        {/* Tab Navigation & Controls */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+          <div className="flex items-center space-x-1 bg-slate-900/80 p-1 rounded-xl border border-slate-800">
+            <button
+              onClick={() => setActiveTab('queue')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition ${
+                activeTab === 'queue'
+                  ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5" />
+              Scheduled Queue
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                  activeTab === 'queue'
+                    ? 'bg-teal-900/60 text-slate-950 font-bold'
+                    : 'bg-slate-800 text-slate-300'
+                }`}
+              >
+                {scheduledEmails.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('history')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition ${
+                activeTab === 'history'
+                  ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Delivery History
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                  activeTab === 'history'
+                    ? 'bg-teal-900/60 text-slate-950 font-bold'
+                    : 'bg-slate-800 text-slate-300'
+                }`}
+              >
+                {emailHistory.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('composer')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition ${
+                activeTab === 'composer'
+                  ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <Send className="w-3.5 h-3.5" />
+              Schedule Email
+            </button>
+
+            <button
+              onClick={() => setActiveTab('batch')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition ${
+                activeTab === 'batch'
+                  ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              Batch Campaign
+            </button>
+          </div>
+
+          {/* Search bar */}
+          {(activeTab === 'queue' || activeTab === 'history') && (
+            <div className="relative w-full sm:w-72">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                placeholder="Search recipient or subject..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-teal-500/50"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-3 top-2.5 text-slate-500 hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* TAB 1: SCHEDULED QUEUE */}
+        {activeTab === 'queue' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-amber-400" />
+                  BullMQ Delayed Job Queue
+                </h3>
+                <p className="text-xs text-slate-400">
+                  These jobs are persisted in Redis and scheduled to be dispatched at their exact specified timestamp.
+                </p>
+              </div>
+
+              <button
+                onClick={() => setActiveTab('composer')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold text-xs shadow-md shadow-teal-500/20 transition"
+              >
+                <PlusCircle className="w-3.5 h-3.5" />
+                Schedule New
+              </button>
+            </div>
+
+            {filteredScheduled.length === 0 ? (
+              <div className="rounded-2xl border border-slate-800/80 bg-slate-900/30 p-12 text-center space-y-4">
+                <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mx-auto text-slate-400">
+                  <Clock className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-white">No Scheduled Emails in Queue</h4>
+                  <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                    All jobs have been dispatched or no delayed jobs are currently pending.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setActiveTab('composer')}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-500 text-slate-950 font-bold text-xs shadow-lg shadow-teal-500/20 hover:bg-teal-400 transition"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  Schedule a Test Email (15s delay)
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filteredScheduled.map((item) => (
+                  <div
+                    key={item.id}
+                    className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5 space-y-4 hover:border-amber-500/40 transition duration-200 shadow-xl flex flex-col justify-between"
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-mono font-medium px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                          {formatCountdown(item.scheduled_at)}
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          ID: {item.id.slice(-6)}
+                        </span>
+                      </div>
+
+                      <h4 className="text-sm font-bold text-white truncate" title={item.subject}>
+                        {item.subject}
+                      </h4>
+                      <p className="text-xs text-teal-400 font-mono truncate" title={item.recipient}>
+                        To: {item.recipient}
+                      </p>
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-800/80 space-y-3">
+                      <div className="text-[11px] text-slate-400 flex items-center justify-between font-mono">
+                        <span>Scheduled:</span>
+                        <span>{new Date(item.scheduled_at).toLocaleTimeString()}</span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setPreviewEmail(item)}
+                          className="flex-1 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium transition"
+                        >
+                          View Body
+                        </button>
+                        <button
+                          onClick={() => handleCancelEmail(item.id)}
+                          className="p-2 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/40 text-xs transition"
+                          title="Cancel scheduled job"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 2: DELIVERY HISTORY */}
+        {activeTab === 'history' && (
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  Sent & Execution Logs
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Emails processed by workers with real-time delivery state, error reports, and live Ethereal sandbox preview links.
+                </p>
+              </div>
+
+              {/* Status filter tabs */}
+              <div className="flex items-center space-x-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs">
+                {['all', 'sent', 'failed', 'cancelled'].map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => setHistoryFilter(f)}
+                    className={`px-3 py-1 rounded-md capitalize font-medium transition ${
+                      historyFilter === f
+                        ? 'bg-slate-800 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {f}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {filteredHistory.length === 0 ? (
+              <div className="rounded-2xl border border-slate-800/80 bg-slate-900/30 p-12 text-center space-y-3">
+                <CheckCircle2 className="w-8 h-8 text-slate-500 mx-auto" />
+                <h4 className="text-sm font-semibold text-white">No Email Delivery Logs</h4>
+                <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                  Once scheduled jobs reach their scheduled execution timestamp, their delivery logs and Ethereal preview links will appear here.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/40 overflow-hidden shadow-xl">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-900/80 text-slate-400 font-semibold border-b border-slate-800">
+                      <tr>
+                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4">Recipient</th>
+                        <th className="py-3 px-4">Subject</th>
+                        <th className="py-3 px-4">Delivered At</th>
+                        <th className="py-3 px-4 text-right">Actions / Sandbox</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {filteredHistory.map((item) => (
+                        <tr key={item.id} className="hover:bg-slate-800/30 transition">
+                          {/* Status */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            {item.status === 'sent' && (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-800/60 font-semibold text-[11px]">
+                                <Check className="w-3 h-3 text-emerald-400" />
+                                Delivered
+                              </span>
+                            )}
+                            {item.status === 'failed' && (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-950/80 text-rose-300 border border-rose-800/60 font-semibold text-[11px]">
+                                <XCircle className="w-3 h-3 text-rose-400" />
+                                Failed
+                              </span>
+                            )}
+                            {item.status === 'cancelled' && (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-semibold text-[11px]">
+                                Cancelled
+                              </span>
+                            )}
+                            {item.status === 'processing' && (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-semibold text-[11px] animate-pulse">
+                                Processing
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Recipient */}
+                          <td className="py-3.5 px-4 font-mono text-slate-200 whitespace-nowrap">
+                            {item.recipient}
+                          </td>
+
+                          {/* Subject */}
+                          <td className="py-3.5 px-4 font-medium text-white max-w-xs truncate" title={item.subject}>
+                            {item.subject}
+                          </td>
+
+                          {/* Delivered At */}
+                          <td className="py-3.5 px-4 text-slate-400 whitespace-nowrap font-mono">
+                            {item.sent_at ? new Date(item.sent_at).toLocaleTimeString() : '—'}
+                          </td>
+
+                          {/* Actions */}
+                          <td className="py-3.5 px-4 text-right space-x-2 whitespace-nowrap">
+                            {/* Ethereal Preview Button */}
+                            {item.preview_url ? (
+                              <a
+                                href={item.preview_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border border-teal-500/30 text-xs font-semibold transition"
+                                title="Open rendered message on Ethereal sandbox"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                View Ethereal Mail
+                              </a>
+                            ) : null}
+
+                            {/* View body */}
+                            <button
+                              onClick={() => setPreviewEmail(item)}
+                              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+                              title="Inspect Email Content"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Retry button for failed/cancelled */}
+                            {(item.status === 'failed' || item.status === 'cancelled') && (
+                              <button
+                                onClick={() => handleRetryEmail(item.id)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs transition"
+                                title="Retry delivery now"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                Retry
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: SCHEDULE COMPOSER (SINGLE) */}
+        {activeTab === 'composer' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            {/* Form */}
+            <div className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/60 p-6 shadow-xl space-y-6">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Send className="w-4 h-4 text-teal-400" />
+                  Compose Scheduled Email
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Configure email recipient, content, and scheduling trigger.
+                </p>
+              </div>
+
+              {/* Template quick-pick */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-400 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-teal-400" />
+                  Quick Load Template
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {EMAIL_TEMPLATES.map((tmpl, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        setSubject(tmpl.subject);
+                        setBody(tmpl.body);
+                      }}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60 transition"
+                    >
+                      {tmpl.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <form onSubmit={handleScheduleSubmit} className="space-y-4">
+                {/* Recipient */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300">Recipient Email Address</label>
+                  <input
+                    type="email"
+                    required
+                    value={recipient}
+                    onChange={(e) => setRecipient(e.target.value)}
+                    placeholder="user@example.com"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-white focus:outline-none focus:border-teal-500 font-mono"
+                  />
+                </div>
+
+                {/* Subject */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300">Email Subject</label>
+                  <input
+                    type="text"
+                    required
+                    value={subject}
+                    onChange={(e) => setSubject(e.target.value)}
+                    placeholder="Campaign subject line..."
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-white focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+
+                {/* Body (HTML / Plain text) */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-300">Email Content (HTML Supported)</label>
+                    <span className="text-[11px] text-teal-400 font-mono">Rendered by Nodemailer</span>
+                  </div>
+                  <textarea
+                    rows={6}
+                    required
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                    className="w-full p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-white font-mono focus:outline-none focus:border-teal-500"
+                  ></textarea>
+                </div>
+
+                {/* Schedule Trigger Selector */}
+                <div className="p-4 rounded-xl border border-slate-800 bg-slate-950/60 space-y-4">
+                  <label className="text-xs font-semibold text-white flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-amber-400" />
+                    Delivery Schedule Timing
+                  </label>
+
+                  <div className="flex items-center gap-3 text-xs">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="scheduleType"
+                        checked={scheduleType === 'delay'}
+                        onChange={() => setScheduleType('delay')}
+                        className="text-teal-500"
+                      />
+                      <span>Relative Delay</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="scheduleType"
+                        checked={scheduleType === 'datetime'}
+                        onChange={() => setScheduleType('datetime')}
+                        className="text-teal-500"
+                      />
+                      <span>Exact Date & Time</span>
+                    </label>
+                  </div>
+
+                  {scheduleType === 'delay' ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        {[
+                          { label: 'Immediate (0s)', val: 0 },
+                          { label: '15 seconds', val: 15 },
+                          { label: '1 minute', val: 60 },
+                          { label: '5 minutes', val: 300 },
+                          { label: '1 hour', val: 3600 },
+                        ].map((btn) => (
+                          <button
+                            key={btn.val}
+                            type="button"
+                            onClick={() => setDelaySeconds(btn.val)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                              delaySeconds === btn.val
+                                ? 'bg-teal-500 text-slate-950 font-bold'
+                                : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                            }`}
+                          >
+                            {btn.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-2">
+                        <span className="text-xs text-slate-400">Custom Delay (Seconds):</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={delaySeconds}
+                          onChange={(e) => setDelaySeconds(Number(e.target.value))}
+                          className="w-24 px-3 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white font-mono"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-slate-400">Select Date and Time</label>
+                      <input
+                        type="datetime-local"
+                        required={scheduleType === 'datetime'}
+                        value={scheduledAt}
+                        onChange={(e) => setScheduledAt(e.target.value)}
+                        className="px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white font-mono"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={composerSubmitting}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-slate-950 font-extrabold text-sm shadow-xl shadow-teal-500/20 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <Send className="w-4 h-4" />
+                  {composerSubmitting ? 'Enqueueing Job in BullMQ...' : 'Schedule Email Job'}
+                </button>
+              </form>
+            </div>
+
+            {/* Sidebar Guide */}
+            <div className="space-y-5">
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 space-y-4">
+                <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-amber-400" />
+                  How Delayed Scheduling Works
+                </h4>
+                <ul className="text-xs text-slate-400 space-y-2.5 leading-relaxed">
+                  <li className="flex items-start gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400 mt-1.5 shrink-0"></span>
+                    <span>
+                      Job is dispatched to <strong>BullMQ</strong> with an exact computed millisecond delay.
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400 mt-1.5 shrink-0"></span>
+                    <span>
+                      Redis persists the job key across server restarts, zero job loss.
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400 mt-1.5 shrink-0"></span>
+                    <span>
+                      Worker picks up the job automatically when delay expires and calls Nodemailer.
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400 mt-1.5 shrink-0"></span>
+                    <span>
+                      An <strong>Ethereal preview link</strong> is immediately created to view the formatted email online.
+                    </span>
+                  </li>
+                </ul>
+              </div>
+
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 space-y-3">
+                <h4 className="text-xs font-bold text-slate-300">Queue Concurrency & Limits</h4>
+                <div className="space-y-2 text-xs font-mono">
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>Concurrency:</span>
+                    <span className="text-teal-400 font-bold">5 parallel jobs</span>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>Rate Limiter:</span>
+                    <span className="text-cyan-400 font-bold">10 emails / second</span>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>Retry Strategy:</span>
+                    <span className="text-amber-400 font-bold">Exponential Backoff</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: BATCH CAMPAIGN COMPOSER */}
+        {activeTab === 'batch' && (
+          <div className="max-w-3xl mx-auto rounded-2xl border border-slate-800 bg-slate-900/60 p-6 shadow-xl space-y-6">
+            <div>
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Users className="w-4 h-4 text-teal-400" />
+                Batch & Staggered Outbound Campaign
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Schedule multiple recipients with progressive interval staggering to respect SMTP provider rate limits.
+              </p>
+            </div>
+
+            <form onSubmit={handleBatchSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-300">
+                  Recipient List (One email per line or comma-separated)
+                </label>
+                <textarea
+                  rows={4}
+                  required
+                  value={batchRecipients}
+                  onChange={(e) => setBatchRecipients(e.target.value)}
+                  placeholder="user1@example.com&#10;user2@example.com&#10;user3@example.com"
+                  className="w-full p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-white font-mono focus:outline-none focus:border-teal-500"
+                ></textarea>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-300">Campaign Subject</label>
+                <input
+                  type="text"
+                  required
+                  value={batchSubject}
+                  onChange={(e) => setBatchSubject(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-white focus:outline-none focus:border-teal-500"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-300">Campaign HTML Body</label>
+                <textarea
+                  rows={4}
+                  required
+                  value={batchBody}
+                  onChange={(e) => setBatchBody(e.target.value)}
+                  className="w-full p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-white font-mono focus:outline-none focus:border-teal-500"
+                ></textarea>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 rounded-xl border border-slate-800 bg-slate-950/60">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-300">Base Initial Delay (Seconds)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={batchBaseDelay}
+                    onChange={(e) => setBatchBaseDelay(Number(e.target.value))}
+                    className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white font-mono"
+                  />
+                  <p className="text-[11px] text-slate-500">Wait before the first email fires</p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-300">Stagger Interval (Seconds)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={batchStagger}
+                    onChange={(e) => setBatchStagger(Number(e.target.value))}
+                    className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white font-mono"
+                  />
+                  <p className="text-[11px] text-slate-500">Delay between each successive email</p>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={batchSubmitting}
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-teal-500 to-indigo-500 hover:from-teal-400 hover:to-indigo-400 text-slate-950 font-extrabold text-sm shadow-xl shadow-teal-500/20 transition flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <Users className="w-4 h-4" />
+                {batchSubmitting ? 'Enqueueing Batch...' : 'Schedule Staggered Batch'}
+              </button>
+            </form>
+          </div>
+        )}
+      </main>
+
+      {/* Email Body Inspector Modal */}
+      {previewEmail && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-800 max-w-2xl w-full rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-white">{previewEmail.subject}</h3>
+                <p className="text-xs text-teal-400 font-mono mt-0.5">To: {previewEmail.recipient}</p>
+              </div>
+              <button
+                onClick={() => setPreviewEmail(null)}
+                className="p-1 rounded-lg bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs text-slate-400 flex items-center justify-between">
+                <span>Message Body Preview</span>
+                {previewEmail.preview_url && (
+                  <a
+                    href={previewEmail.preview_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-teal-400 hover:underline"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Open in Ethereal
+                  </a>
+                )}
+              </div>
+              <div
+                className="p-4 rounded-xl bg-slate-950 border border-slate-800/80 text-xs text-slate-200 overflow-y-auto max-h-80 prose prose-invert"
+                dangerouslySetInnerHTML={{ __html: previewEmail.body }}
+              />
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setPreviewEmail(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-white transition"
+              >
+                Close Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
