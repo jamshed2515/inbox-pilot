@@ -1,5 +1,6 @@
 import nodemailer, { Transporter, SentMessageInfo, TestAccount } from 'nodemailer';
 import { env } from '../config/env';
+import { EmailSenderRecord } from '../config/db';
 
 export interface SendEmailOptions {
   to: string;
@@ -12,12 +13,15 @@ export interface SendEmailResult {
   messageId: string;
   previewUrl: string | null;
   accepted: string[];
+  senderEmail?: string;
+  senderName?: string;
 }
 
 class MailerService {
   private transporter: Transporter | null = null;
   private etherealAccount: TestAccount | null = null;
   private initializing: Promise<void> | null = null;
+  private senderTransporters = new Map<string, Transporter>();
 
 
   constructor() {
@@ -71,26 +75,52 @@ class MailerService {
     }
   }
 
-  public async sendMail(options: SendEmailOptions): Promise<SendEmailResult> {
+  private async getTransporterForSender(sender?: EmailSenderRecord | null): Promise<Transporter> {
     if (this.initializing) {
       await this.initializing;
     }
 
-    if (!this.transporter) {
-      throw new Error('Mail transporter is not ready.');
+    if (sender && sender.smtp_host && sender.smtp_user && sender.smtp_pass) {
+      const cached = this.senderTransporters.get(sender.id);
+      if (cached) return cached;
+
+      const customTransporter = nodemailer.createTransport({
+        host: sender.smtp_host,
+        port: sender.smtp_port || 587,
+        secure: sender.smtp_port === 465,
+        auth: {
+          user: sender.smtp_user,
+          pass: sender.smtp_pass,
+        },
+      });
+      this.senderTransporters.set(sender.id, customTransporter);
+      return customTransporter;
     }
 
-    const defaultFrom =
-      options.from ||
-      process.env.SMTP_FROM ||
-      (this.etherealAccount
-        ? `"ReachInbox Scheduler" <${this.etherealAccount.user}>`
-        : '"ReachInbox Scheduler" <no-reply@reachinbox.ai>');
+    if (!this.transporter) {
+      throw new Error('Default mail transporter is not ready.');
+    }
+    return this.transporter;
+  }
+
+  public async sendMailFromSender(
+    sender: EmailSenderRecord | null | undefined,
+    options: SendEmailOptions
+  ): Promise<SendEmailResult> {
+    const transporter = await this.getTransporterForSender(sender);
+
+    const fromHeader = sender
+      ? `"${sender.name}" <${sender.email}>`
+      : options.from ||
+        process.env.SMTP_FROM ||
+        (this.etherealAccount
+          ? `"ReachInbox Scheduler" <${this.etherealAccount.user}>`
+          : '"ReachInbox Scheduler" <no-reply@reachinbox.ai>');
 
     const isHtml = options.body.includes('<') && options.body.includes('>');
 
-    const info: SentMessageInfo = await this.transporter.sendMail({
-      from: defaultFrom,
+    const info: SentMessageInfo = await transporter.sendMail({
+      from: fromHeader,
       to: options.to,
       subject: options.subject,
       text: isHtml ? undefined : options.body,
@@ -103,13 +133,40 @@ class MailerService {
       messageId: info.messageId,
       previewUrl: previewUrl ? String(previewUrl) : null,
       accepted: Array.isArray(info.accepted) ? info.accepted.map(String) : [options.to],
+      senderEmail: sender?.email,
+      senderName: sender?.name,
     };
+  }
+
+  public async provisionTestAccount(name: string): Promise<{
+    name: string;
+    email: string;
+    smtp_host: string;
+    smtp_port: number;
+    smtp_user: string;
+    smtp_pass: string;
+  }> {
+    console.log(`📬 Provisioning fresh dynamic Ethereal test account for sender: ${name}...`);
+    const testAccount = await nodemailer.createTestAccount();
+    return {
+      name,
+      email: testAccount.user,
+      smtp_host: 'smtp.ethereal.email',
+      smtp_port: 587,
+      smtp_user: testAccount.user,
+      smtp_pass: testAccount.pass,
+    };
+  }
+
+  public async sendMail(options: SendEmailOptions): Promise<SendEmailResult> {
+    return this.sendMailFromSender(null, options);
   }
 
   public getAccountInfo() {
     return {
       type: this.etherealAccount ? 'ethereal' : 'custom',
       user: this.etherealAccount ? this.etherealAccount.user : process.env.SMTP_USER || 'configured',
+      configuredSendersCount: this.senderTransporters.size,
     };
   }
 }

@@ -1,6 +1,6 @@
 import app from './app';
 import { env } from './config/env';
-import { initDb, pgPool } from './config/db';
+import { initDb, pgPool, db } from './config/db';
 import { startEmailWorker } from './workers/email.worker';
 import { redisConnection } from './config/redis';
 import { initElasticsearch, esClient } from './services/elasticsearch.service';
@@ -10,6 +10,30 @@ let worker: ReturnType<typeof startEmailWorker> | null = null;
 const startServer = async () => {
   // 1. Initialize PostgreSQL Relational Database Schema
   await initDb();
+
+  // Seed default dynamic senders if none exist
+  const existingSenders = await db.getSenders();
+  if (existingSenders.length === 0) {
+    console.log('🌱 Initializing dynamic default email senders...');
+    const now = new Date().toISOString();
+    await db.createSender({
+      id: `sender_primary_${Date.now()}`,
+      name: 'Default Outreach Team',
+      email: 'outreach@reachinbox-scheduler.io',
+      is_default: true,
+      created_at: now,
+      updated_at: now,
+    });
+    await db.createSender({
+      id: `sender_support_${Date.now()}`,
+      name: 'Customer Support Desk',
+      email: 'support@reachinbox-scheduler.io',
+      is_default: false,
+      created_at: now,
+      updated_at: now,
+    });
+    console.log('✅ Dynamic default email senders provisioned.');
+  }
 
   // 2. Initialize Elasticsearch Index & Connectivity
   await initElasticsearch();

@@ -8,7 +8,8 @@
     "build": "rimraf dist && tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "node verify-flow.js"
+    "test:e2e": "node verify-flow.js",
+    "test:senders": "node verify-senders.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.15.0",

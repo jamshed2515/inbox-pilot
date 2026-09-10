@@ -10,16 +10,19 @@ const singleEmailSchema = z.object({
   recipient: z.string().email('Please provide a valid recipient email address'),
   subject: z.string().min(1, 'Subject cannot be empty'),
   body: z.string().min(1, 'Email body cannot be empty'),
+  senderId: z.string().optional(),
   scheduledAt: z.string().optional(),
   delaySeconds: z.coerce.number().min(0).optional(),
 });
 
 const batchEmailSchema = z.object({
+  senderId: z.string().optional(),
   emails: z.array(
     z.object({
       recipient: z.string().email(),
       subject: z.string().min(1),
       body: z.string().min(1),
+      senderId: z.string().optional(),
       scheduledAt: z.string().optional(),
       delaySeconds: z.coerce.number().min(0).optional(),
     })
@@ -30,6 +33,22 @@ const batchEmailSchema = z.object({
 export const scheduleEmail = async (req: Request, res: Response): Promise<void> => {
   try {
     const validated = singleEmailSchema.parse(req.body);
+
+    // Resolve sender
+    let resolvedSenderId = validated.senderId || null;
+    if (resolvedSenderId) {
+      const sender = await db.getSenderById(resolvedSenderId);
+      if (!sender) {
+        res.status(400).json({
+          success: false,
+          error: { message: `Sender with ID '${resolvedSenderId}' does not exist` },
+        });
+        return;
+      }
+    } else {
+      const defaultSender = await db.getDefaultSender();
+      resolvedSenderId = defaultSender?.id || null;
+    }
 
     const now = Date.now();
     let scheduledTimeMs = now;
@@ -52,6 +71,7 @@ export const scheduleEmail = async (req: Request, res: Response): Promise<void> 
     const newRecord: EmailRecord = {
       id: emailId,
       job_id: emailId,
+      sender_id: resolvedSenderId,
       recipient: validated.recipient,
       subject: validated.subject,
       body: validated.body,
@@ -74,6 +94,7 @@ export const scheduleEmail = async (req: Request, res: Response): Promise<void> 
     const job = await queueService.addEmailJob(
       {
         id: emailId,
+        senderId: resolvedSenderId,
         recipient: validated.recipient,
         subject: validated.subject,
         body: validated.body,
@@ -115,9 +136,12 @@ export const batchScheduleEmails = async (req: Request, res: Response): Promise<
     const results: EmailRecord[] = [];
     const now = Date.now();
 
+    const defaultSender = await db.getDefaultSender();
+
     for (let i = 0; i < validated.emails.length; i++) {
       const item = validated.emails[i];
       const staggerDelayMs = i * validated.staggerSeconds * 1000;
+      const itemSenderId = item.senderId || validated.senderId || defaultSender?.id || null;
       
       let baseDelayMs = 0;
       if (item.delaySeconds !== undefined && item.delaySeconds > 0) {
@@ -136,6 +160,7 @@ export const batchScheduleEmails = async (req: Request, res: Response): Promise<
       const record: EmailRecord = {
         id: emailId,
         job_id: emailId,
+        sender_id: itemSenderId,
         recipient: item.recipient,
         subject: item.subject,
         body: item.body,
@@ -153,6 +178,7 @@ export const batchScheduleEmails = async (req: Request, res: Response): Promise<
       await queueService.addEmailJob(
         {
           id: emailId,
+          senderId: itemSenderId,
           recipient: item.recipient,
           subject: item.subject,
           body: item.body,
@@ -342,6 +368,7 @@ export const getStats = async (_req: Request, res: Response): Promise<void> => {
         queue: queueStats,
         mailer: mailerService.getAccountInfo(),
         storageType: 'PostgreSQL 16',
+        sendersCount: (await db.getSenders()).length,
         elasticsearch: {
           available: elasticsearchService.isAvailable(),
           index: process.env.ELASTICSEARCH_INDEX || 'emails',

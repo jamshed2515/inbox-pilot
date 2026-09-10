@@ -35,6 +35,7 @@ export const initElasticsearch = async (): Promise<boolean> => {
           properties: {
             id: { type: 'keyword' },
             job_id: { type: 'keyword' },
+            sender_id: { type: 'keyword' },
             recipient: {
               type: 'text',
               fields: {
@@ -55,6 +56,15 @@ export const initElasticsearch = async (): Promise<boolean> => {
       });
       console.log(`📦 Elasticsearch index '${INDEX_NAME}' created with full-text search mappings.`);
     } else {
+      // Ensure sender_id mapping is added to existing index
+      try {
+        await esClient.indices.putMapping({
+          index: INDEX_NAME,
+          properties: {
+            sender_id: { type: 'keyword' },
+          },
+        });
+      } catch {}
       console.log(`📦 Elasticsearch index '${INDEX_NAME}' verified.`);
     }
 
@@ -84,6 +94,7 @@ export const elasticsearchService = {
         document: {
           id: email.id,
           job_id: email.job_id,
+          sender_id: email.sender_id || null,
           recipient: email.recipient,
           subject: email.subject,
           body: email.body,

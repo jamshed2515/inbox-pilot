@@ -9,21 +9,38 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
   const worker = new Worker<EmailJobData>(
     EMAIL_QUEUE_NAME,
     async (job: Job<EmailJobData>) => {
-      const { id, recipient, subject, body } = job.data;
-      console.log(`\n⏳ [Worker] Processing Job ID: ${job.id} | Email ID: ${id} | To: ${recipient}`);
+      const { id, senderId, recipient, subject, body } = job.data;
+
+      // Resolve assigned sender
+      let sender = null;
+      if (senderId) {
+        sender = await db.getSenderById(senderId);
+      }
+      if (!sender) {
+        const record = await db.getEmailById(id);
+        if (record?.sender_id) {
+          sender = await db.getSenderById(record.sender_id);
+        }
+      }
+      if (!sender) {
+        sender = await db.getDefaultSender();
+      }
+
+      const senderDisplay = sender ? `"${sender.name}" <${sender.email}>` : 'Default Sender';
+      console.log(`\n⏳ [Worker] Processing Job ID: ${job.id} | Email ID: ${id} | From: ${senderDisplay} | To: ${recipient}`);
 
       // 1. Update state to 'processing' in PostgreSQL and Elasticsearch
       await db.updateEmail(id, { status: 'processing' });
       await elasticsearchService.updateEmailStatus(id, { status: 'processing' });
 
       try {
-        const result = await mailerService.sendMail({
+        const result = await mailerService.sendMailFromSender(sender, {
           to: recipient,
           subject,
           body,
         });
 
-        console.log(`✅ [Worker] Email delivered successfully to ${recipient}`);
+        console.log(`✅ [Worker] Email delivered successfully from ${senderDisplay} to ${recipient}`);
         if (result.previewUrl) {
           console.log(`🔗 [Preview URL]: ${result.previewUrl}`);
         }
