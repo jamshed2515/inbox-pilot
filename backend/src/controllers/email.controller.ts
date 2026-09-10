@@ -247,7 +247,7 @@ export const getEmailHistory = async (req: Request, res: Response): Promise<void
 
 export const cancelEmail = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const email = await db.getEmailById(id);
 
     if (!email) {
@@ -296,7 +296,7 @@ export const cancelEmail = async (req: Request, res: Response): Promise<void> =>
 
 export const retryEmail = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const email = await db.getEmailById(id);
 
     if (!email) {

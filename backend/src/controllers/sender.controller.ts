@@ -112,7 +112,7 @@ export const provisionTestSender = async (req: Request, res: Response): Promise<
 
 export const getSender = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const sender = await db.getSenderById(id);
     if (!sender) {
       res.status(404).json({
@@ -135,7 +135,7 @@ export const getSender = async (req: Request, res: Response): Promise<void> => {
 
 export const deleteSender = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const deleted = await db.deleteSender(id);
     if (!deleted) {
       res.status(404).json({
