@@ -21,11 +21,35 @@ import {
   Users,
   Check,
   Radio,
+  MessageSquare,
+  ShieldAlert,
+  Bell,
+  Hash,
 } from 'lucide-react';
+
+export interface EmailSenderRecord {
+  id: string;
+  name: string;
+  email: string;
+  is_default: boolean;
+}
+
+export interface SlackStatusData {
+  connected: boolean;
+  data: {
+    teamName?: string;
+    channel?: string;
+    hasWebhook?: boolean;
+    hasToken?: boolean;
+    updatedAt?: string;
+  } | null;
+  oauthUrl: string;
+}
 
 interface EmailRecord {
   id: string;
   job_id: string;
+  sender_id?: string | null;
   recipient: string;
   subject: string;
   body: string;
@@ -95,9 +119,12 @@ const EMAIL_TEMPLATES = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'queue' | 'history' | 'composer' | 'batch'>('queue');
+  const [activeTab, setActiveTab] = useState<'queue' | 'history' | 'composer' | 'batch' | 'slack'>('queue');
   const [scheduledEmails, setScheduledEmails] = useState<EmailRecord[]>([]);
   const [emailHistory, setEmailHistory] = useState<EmailRecord[]>([]);
+  const [senders, setSenders] = useState<EmailSenderRecord[]>([]);
+  const [selectedSenderId, setSelectedSenderId] = useState<string>('');
+  const [batchSenderId, setBatchSenderId] = useState<string>('');
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [backendOnline, setBackendOnline] = useState<boolean>(true);
@@ -105,6 +132,12 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [historyFilter, setHistoryFilter] = useState<string>('all');
   const [nowTime, setNowTime] = useState<number>(Date.now());
+
+  // Slack Integration State
+  const [slackStatus, setSlackStatus] = useState<SlackStatusData | null>(null);
+  const [slackWebhookUrl, setSlackWebhookUrl] = useState<string>('');
+  const [slackConnecting, setSlackConnecting] = useState<boolean>(false);
+  const [slackTesting, setSlackTesting] = useState<boolean>(false);
 
   // Composer Form State
   const [recipient, setRecipient] = useState<string>('alex.founder@reachinbox.ai');
@@ -137,6 +170,18 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
+  // Listen for Slack OAuth redirect parameters in URL
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('slack') === 'connected') {
+      showNotification('🎉 Slack workspace connected successfully via OAuth!');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (params.get('slack_error')) {
+      showNotification(`Slack connection error: ${params.get('slack_error')}`, 'error');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
+
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
     setActionMessage({ text, type });
     setTimeout(() => {
@@ -147,10 +192,12 @@ export default function App() {
   // Fetch all data
   const fetchData = useCallback(async () => {
     try {
-      const [statsRes, schedRes, histRes] = await Promise.all([
+      const [statsRes, schedRes, histRes, sendersRes, slackRes] = await Promise.all([
         fetch('/api/emails/stats'),
         fetch('/api/emails/scheduled'),
         fetch(`/api/emails/history?status=${historyFilter}`),
+        fetch('/api/senders'),
+        fetch('/api/slack/status'),
       ]);
 
       if (statsRes.ok) {
@@ -170,10 +217,26 @@ export default function App() {
         const data = await histRes.json();
         setEmailHistory(data.data || []);
       }
+
+      if (sendersRes.ok) {
+        const data = await sendersRes.json();
+        const sendersList: EmailSenderRecord[] = data.data || [];
+        setSenders(sendersList);
+        if (sendersList.length > 0 && !selectedSenderId) {
+          const defaultSender = sendersList.find((s) => s.is_default) || sendersList[0];
+          setSelectedSenderId(defaultSender.id);
+          setBatchSenderId(defaultSender.id);
+        }
+      }
+
+      if (slackRes.ok) {
+        const data = await slackRes.json();
+        setSlackStatus(data);
+      }
     } catch {
       setBackendOnline(false);
     }
-  }, [historyFilter]);
+  }, [historyFilter, selectedSenderId]);
 
   useEffect(() => {
     fetchData();
@@ -188,6 +251,55 @@ export default function App() {
     return () => clearInterval(interval);
   }, [autoRefresh, fetchData]);
 
+  // Slack Action Handlers
+  const handleConnectSlackWebhook = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!slackWebhookUrl.trim()) return;
+    setSlackConnecting(true);
+    try {
+      const res = await fetch('/api/slack/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ webhookUrl: slackWebhookUrl.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Failed to connect Slack webhook');
+      showNotification('🎉 Slack webhook connected and saved to PostgreSQL!');
+      setSlackWebhookUrl('');
+      fetchData();
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    } finally {
+      setSlackConnecting(false);
+    }
+  };
+
+  const handleTestSlackAlert = async () => {
+    setSlackTesting(true);
+    try {
+      const res = await fetch('/api/slack/test', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Failed to send alert');
+      showNotification('✅ Real Slack rate-limit alert dispatched to channel!');
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    } finally {
+      setSlackTesting(false);
+    }
+  };
+
+  const handleDisconnectSlack = async () => {
+    try {
+      const res = await fetch('/api/slack/disconnect', { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Failed to disconnect');
+      showNotification('Slack integration disconnected');
+      fetchData();
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    }
+  };
+
   // Schedule Single Email
   const handleScheduleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -199,6 +311,10 @@ export default function App() {
         subject,
         body,
       };
+
+      if (selectedSenderId) {
+        payload.senderId = selectedSenderId;
+      }
 
       if (scheduleType === 'delay') {
         payload.delaySeconds = Number(delaySeconds);
@@ -243,10 +359,12 @@ export default function App() {
 
     try {
       const payload = {
+        senderId: batchSenderId || undefined,
         emails: emailList.map((addr) => ({
           recipient: addr,
           subject: batchSubject,
           body: batchBody,
+          senderId: batchSenderId || undefined,
           delaySeconds: Number(batchBaseDelay),
         })),
         staggerSeconds: Number(batchStagger),
@@ -358,6 +476,25 @@ export default function App() {
             >
               <Radio className={`w-3.5 h-3.5 ${autoRefresh ? 'text-teal-400 animate-pulse' : ''}`} />
               <span className="hidden sm:inline">{autoRefresh ? 'Live Sync ON' : 'Live Sync OFF'}</span>
+            </button>
+
+            {/* Slack Integration Button */}
+            <button
+              onClick={() => setActiveTab('slack')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                slackStatus?.connected
+                  ? 'bg-purple-950/60 text-purple-300 border-purple-800 hover:bg-purple-900/60'
+                  : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+              }`}
+              title="Slack OAuth & Rate Limit Alerting"
+            >
+              <MessageSquare className="w-3.5 h-3.5 text-purple-400" />
+              <span className="hidden md:inline">
+                {slackStatus?.connected ? `Slack: ${slackStatus.data?.channel || 'Active'}` : 'Connect Slack'}
+              </span>
+              {slackStatus?.connected && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              )}
             </button>
 
             {/* Manual Refresh Button */}
@@ -560,6 +697,25 @@ export default function App() {
             >
               <Users className="w-3.5 h-3.5" />
               Batch Campaign
+            </button>
+
+            <button
+              onClick={() => setActiveTab('slack')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition ${
+                activeTab === 'slack'
+                  ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md shadow-purple-600/30'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <MessageSquare className="w-3.5 h-3.5 text-purple-400" />
+              Slack Alerts
+              {slackStatus?.connected ? (
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              ) : (
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-purple-950/80 text-purple-300 font-mono border border-purple-800/50">
+                  OAuth
+                </span>
+              )}
             </button>
           </div>
 
@@ -866,6 +1022,30 @@ export default function App() {
               </div>
 
               <form onSubmit={handleScheduleSubmit} className="space-y-4">
+                {/* Sender Selector */}
+                {senders.length > 0 && (
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <Users className="w-3.5 h-3.5 text-teal-400" />
+                        Outbound Email Sender
+                      </span>
+                      <span className="text-[10px] font-mono text-teal-400">Phase C Multi-Sender</span>
+                    </label>
+                    <select
+                      value={selectedSenderId}
+                      onChange={(e) => setSelectedSenderId(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-white focus:outline-none focus:border-teal-500 font-mono"
+                    >
+                      {senders.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} &lt;{s.email}&gt; {s.is_default ? '★ (Default)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 {/* Recipient */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-300">Recipient Email Address</label>
@@ -1069,6 +1249,30 @@ export default function App() {
             </div>
 
             <form onSubmit={handleBatchSubmit} className="space-y-4">
+              {/* Sender Selector for Batch */}
+              {senders.length > 0 && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5 text-teal-400" />
+                      Outbound Email Sender
+                    </span>
+                    <span className="text-[10px] font-mono text-teal-400">Phase C Multi-Sender</span>
+                  </label>
+                  <select
+                    value={batchSenderId}
+                    onChange={(e) => setBatchSenderId(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-white focus:outline-none focus:border-teal-500 font-mono"
+                  >
+                    {senders.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} &lt;{s.email}&gt; {s.is_default ? '★ (Default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-300">
                   Recipient List (One email per line or comma-separated)
@@ -1140,6 +1344,264 @@ export default function App() {
                 {batchSubmitting ? 'Enqueueing Batch...' : 'Schedule Staggered Batch'}
               </button>
             </form>
+          </div>
+        )}
+
+        {/* TAB 5: SLACK OAUTH & ALERTING (PHASE E) */}
+        {activeTab === 'slack' && (
+          <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-200">
+            {/* Header Banner */}
+            <div className="rounded-2xl border border-purple-500/20 bg-gradient-to-br from-purple-950/40 via-slate-900/60 to-slate-900/40 p-6 shadow-2xl backdrop-blur-md relative overflow-hidden">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-purple-500/20 border border-purple-500/30 flex items-center justify-center text-purple-400 shadow-lg shadow-purple-500/20">
+                    <MessageSquare className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg font-bold text-white">Slack OAuth & Automated Alerts</h3>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-semibold">
+                        Phase E
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Real-time alert dispatch to your Slack workspace whenever any sender reaches the hourly limit of 200 emails/hour.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border ${
+                      slackStatus?.connected
+                        ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800'
+                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                    }`}
+                  >
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        slackStatus?.connected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'
+                      }`}
+                    ></span>
+                    {slackStatus?.connected ? 'Integration Active' : 'Not Connected'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Left 2 Cols: Connection Controls */}
+              <div className="lg:col-span-2 space-y-6">
+                {/* Connection Status Card */}
+                {slackStatus?.connected ? (
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 space-y-5 shadow-xl">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                          <CheckCircle2 className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-bold text-white">
+                            Connected to {slackStatus.data?.teamName || 'Slack Workspace'}
+                          </h4>
+                          <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5 font-mono">
+                            <Hash className="w-3 h-3 text-purple-400" />
+                            Target Channel: {slackStatus.data?.channel || '#email-alerts'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={handleDisconnectSlack}
+                        className="px-3 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 text-xs font-semibold transition"
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+
+                    <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2 text-xs font-mono">
+                      <div className="flex justify-between text-slate-400">
+                        <span>Workspace / Team:</span>
+                        <span className="text-white font-semibold">{slackStatus.data?.teamName || 'Direct Webhook'}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-400">
+                        <span>Alert Channel:</span>
+                        <span className="text-teal-400 font-semibold">{slackStatus.data?.channel || '#email-alerts'}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-400">
+                        <span>Database Persistence:</span>
+                        <span className="text-emerald-400">PostgreSQL (slack_integrations)</span>
+                      </div>
+                      <div className="flex justify-between text-slate-400">
+                        <span>Connected At:</span>
+                        <span className="text-slate-300">
+                          {slackStatus.data?.updatedAt
+                            ? new Date(slackStatus.data.updatedAt).toLocaleString()
+                            : 'Active'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+                      <button
+                        onClick={handleTestSlackAlert}
+                        disabled={slackTesting}
+                        className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-400 hover:to-indigo-400 text-white font-bold text-xs shadow-lg shadow-purple-500/20 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                      >
+                        <Bell className={`w-4 h-4 ${slackTesting ? 'animate-bounce' : ''}`} />
+                        {slackTesting ? 'Dispatching Live Alert...' : 'Send Live Test Slack Alert'}
+                      </button>
+
+                      <a
+                        href="/api/slack/oauth/start"
+                        className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold text-center border border-slate-700 transition"
+                      >
+                        Re-authenticate with OAuth
+                      </a>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 space-y-6 shadow-xl">
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <MessageSquare className="w-4 h-4 text-purple-400" />
+                        Option 1: Connect via Slack OAuth 2.0
+                      </h4>
+                      <p className="text-xs text-slate-400">
+                        Authorize our app directly using Slack’s official OAuth 2.0 flow. Slack will redirect back with an authorization code to store your workspace credentials securely.
+                      </p>
+                      <div className="pt-2">
+                        <a
+                          href="/api/slack/oauth/start"
+                          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs shadow-lg shadow-purple-500/20 transition"
+                        >
+                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.527 2.527 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" />
+                          </svg>
+                          Connect with Slack OAuth
+                        </a>
+                      </div>
+                    </div>
+
+                    <div className="relative flex py-2 items-center">
+                      <div className="flex-grow border-t border-slate-800"></div>
+                      <span className="flex-shrink mx-4 text-[11px] font-mono text-slate-500 uppercase tracking-wider">
+                        Or direct connection
+                      </span>
+                      <div className="flex-grow border-t border-slate-800"></div>
+                    </div>
+
+                    {/* Direct Webhook Form */}
+                    <form onSubmit={handleConnectSlackWebhook} className="space-y-3">
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <Hash className="w-4 h-4 text-teal-400" />
+                        Option 2: Direct Incoming Webhook URL
+                      </h4>
+                      <p className="text-xs text-slate-400">
+                        Paste any Slack Incoming Webhook URL (e.g. <code>https://hooks.slack.com/services/...</code>) or use the mock webhook to test instantly.
+                      </p>
+                      <div className="flex gap-2">
+                        <input
+                          type="url"
+                          required
+                          placeholder="https://hooks.slack.com/services/T00/B00/XXXX"
+                          value={slackWebhookUrl}
+                          onChange={(e) => setSlackWebhookUrl(e.target.value)}
+                          className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-purple-500 font-mono"
+                        />
+                        <button
+                          type="submit"
+                          disabled={slackConnecting}
+                          className="px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs transition shrink-0 disabled:opacity-50"
+                        >
+                          {slackConnecting ? 'Connecting...' : 'Save & Activate'}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+
+                {/* Rate Limiting Alert Verification Card */}
+                <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6 space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                      <ShieldAlert className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-white">Automated Rate Limit Trigger</h4>
+                      <p className="text-xs text-slate-400">
+                        Triggered automatically by the BullMQ worker when a sender exceeds the hourly quota.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
+                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                      <span className="text-slate-500 block text-[10px]">Hourly Quota</span>
+                      <span className="text-teal-400 font-bold">200 emails / hr</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                      <span className="text-slate-500 block text-[10px]">On Limit Exceeded</span>
+                      <span className="text-amber-400 font-bold">Reschedule to Next Hour</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                      <span className="text-slate-500 block text-[10px]">Alert Dispatch</span>
+                      <span className="text-purple-400 font-bold">Slack Real-time Block</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Col: Architecture & Guide */}
+              <div className="space-y-6">
+                <div className="rounded-2xl border border-purple-500/20 bg-purple-950/10 p-5 space-y-4">
+                  <h4 className="text-xs font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Bell className="w-3.5 h-3.5" />
+                    Alert Architecture Flow
+                  </h4>
+                  <ol className="space-y-3 text-xs text-slate-300">
+                    <li className="flex items-start gap-2">
+                      <span className="w-5 h-5 rounded-full bg-purple-500/20 text-purple-300 flex items-center justify-center shrink-0 font-mono text-[10px] font-bold">
+                        1
+                      </span>
+                      <span>
+                        <strong>Sender Rate Check:</strong> BullMQ worker checks Redis <code>rate_limit:senderId:hour</code> before sending.
+                      </span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="w-5 h-5 rounded-full bg-purple-500/20 text-purple-300 flex items-center justify-center shrink-0 font-mono text-[10px] font-bold">
+                        2
+                      </span>
+                      <span>
+                        <strong>Never-Drop Policy:</strong> If limit (200/hr) is reached, email is delayed to the next hour window.
+                      </span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="w-5 h-5 rounded-full bg-purple-500/20 text-purple-300 flex items-center justify-center shrink-0 font-mono text-[10px] font-bold">
+                        3
+                      </span>
+                      <span>
+                        <strong>Slack Dispatch:</strong> A structured Block Kit message is sent to the configured Slack channel.
+                      </span>
+                    </li>
+                  </ol>
+                </div>
+
+                <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 space-y-3">
+                  <h4 className="text-xs font-bold text-slate-300">Block Kit Message Payload</h4>
+                  <p className="text-xs text-slate-400">
+                    Includes sender identity, current count, hourly limit, rescheduled timestamp, and recipient details.
+                  </p>
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-[11px] text-purple-300 leading-relaxed overflow-x-auto">
+                    🚨 <strong>RATE LIMIT EXCEEDED</strong><br />
+                    Sender: Default SMTP<br />
+                    Limit: 200/hour<br />
+                    Deferred Until: Next Hour Window<br />
+                    Status: Rescheduled (Not Dropped)
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </main>

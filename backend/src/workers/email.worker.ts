@@ -5,6 +5,7 @@ import { mailerService } from '../services/mailer.service';
 import { db } from '../config/db';
 import { elasticsearchService } from '../services/elasticsearch.service';
 import { rateLimiterService } from '../services/rateLimiter.service';
+import { slackService } from '../services/slack.service';
 import { env } from '../config/env';
 
 export const startEmailWorker = (): Worker<EmailJobData> => {
@@ -34,6 +35,7 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
       // Rate limit check in Redis: rate_limit:senderId:currentHour
       if (sender) {
         const rateCheck = await rateLimiterService.checkAndIncrementSenderLimit(sender.id);
+        console.log(`🔍 [Worker] Rate check for sender ${sender.id}:`, JSON.stringify(rateCheck));
         if (!rateCheck.allowed) {
           const nextHourIso = rateCheck.nextHourIso!;
           const delayMs = rateCheck.delayMs!;
@@ -54,6 +56,18 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
             status: 'scheduled',
             scheduled_at: nextHourIso,
             error_message: `Hourly rate limit of ${rateCheck.maxLimit}/hr exceeded for sender. Rescheduled for next hour window.`,
+          });
+
+          // Send real Slack notification
+          await slackService.sendRateLimitAlert({
+            senderId: sender.id,
+            senderName: sender.name,
+            senderEmail: sender.email,
+            currentCount: rateCheck.currentCount,
+            maxLimit: rateCheck.maxLimit,
+            nextHourIso,
+            emailId: id,
+            recipient,
           });
 
           // Re-schedule in queue for the calculated next-hour window

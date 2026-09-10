@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test:e2e": "node verify-flow.js",
     "test:senders": "node verify-senders.js",
-    "test:ratelimit": "node verify-ratelimit.js"
+    "test:ratelimit": "node verify-ratelimit.js",
+    "test:slack": "node verify-slack.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.15.0",

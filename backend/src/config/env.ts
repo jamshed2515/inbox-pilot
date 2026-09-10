@@ -31,6 +31,14 @@ const envSchema = z.object({
   WORKER_CONCURRENCY: z.coerce.number().default(5),
   MIN_EMAIL_DELAY_SECONDS: z.coerce.number().default(2),
   MAX_EMAILS_PER_HOUR_PER_SENDER: z.coerce.number().default(200),
+
+  // Slack Integration & OAuth
+  SLACK_CLIENT_ID: z.string().optional(),
+  SLACK_CLIENT_SECRET: z.string().optional(),
+  SLACK_REDIRECT_URI: z.string().default('http://localhost:5000/api/slack/oauth/callback'),
+  SLACK_DEFAULT_CHANNEL: z.string().default('#email-alerts'),
+  SLACK_WEBHOOK_URL: z.string().optional(),
+  SLACK_BOT_TOKEN: z.string().optional(),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

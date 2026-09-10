@@ -30,6 +30,20 @@ export interface EmailRecord {
   updated_at: string;
 }
 
+export interface SlackIntegrationRecord {
+  id: string;
+  team_id?: string | null;
+  team_name?: string | null;
+  access_token?: string | null;
+  bot_user_id?: string | null;
+  channel_id?: string | null;
+  channel_name?: string | null;
+  incoming_webhook_url?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 // PostgreSQL Connection Pool
 export const pgPool = new Pool({
   connectionString: env.DATABASE_URL,
@@ -101,6 +115,24 @@ export const initDb = async (): Promise<void> => {
         END IF;
       END $$;
       CREATE INDEX IF NOT EXISTS idx_emails_sender_id ON emails(sender_id);
+    `);
+
+    // 4. Create slack_integrations table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS slack_integrations (
+        id VARCHAR(64) PRIMARY KEY,
+        team_id VARCHAR(64),
+        team_name VARCHAR(255),
+        access_token TEXT,
+        bot_user_id VARCHAR(64),
+        channel_id VARCHAR(64),
+        channel_name VARCHAR(255),
+        incoming_webhook_url TEXT,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_slack_active ON slack_integrations(is_active);
     `);
 
     console.log('📦 PostgreSQL database connected and relational schema verified.');
@@ -295,5 +327,44 @@ export const db = {
       failed: parseInt(row.failed, 10) || 0,
       cancelled: parseInt(row.cancelled, 10) || 0,
     };
+  },
+
+  async getSlackIntegration(): Promise<SlackIntegrationRecord | null> {
+    const res = await pgPool.query(
+      'SELECT * FROM slack_integrations WHERE is_active = TRUE ORDER BY updated_at DESC LIMIT 1'
+    );
+    return res.rows[0] || null;
+  },
+
+  async saveSlackIntegration(record: SlackIntegrationRecord): Promise<SlackIntegrationRecord> {
+    // Upsert or insert new active integration
+    await pgPool.query('UPDATE slack_integrations SET is_active = FALSE');
+    const query = `
+      INSERT INTO slack_integrations (
+        id, team_id, team_name, access_token, bot_user_id, channel_id, channel_name, incoming_webhook_url, is_active, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      RETURNING *;
+    `;
+    const values = [
+      record.id,
+      record.team_id || null,
+      record.team_name || null,
+      record.access_token || null,
+      record.bot_user_id || null,
+      record.channel_id || null,
+      record.channel_name || null,
+      record.incoming_webhook_url || null,
+      record.is_active ?? true,
+      record.created_at,
+      record.updated_at,
+    ];
+    const res = await pgPool.query(query, values);
+    return res.rows[0];
+  },
+
+  async deleteSlackIntegration(): Promise<boolean> {
+    const res = await pgPool.query('DELETE FROM slack_integrations');
+    return (res.rowCount ?? 0) > 0;
   },
 };
