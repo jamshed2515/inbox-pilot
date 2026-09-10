@@ -11,7 +11,8 @@
     "test:e2e": "node verify-flow.js",
     "test:senders": "node verify-senders.js",
     "test:ratelimit": "node verify-ratelimit.js",
-    "test:slack": "node verify-slack.js"
+    "test:slack": "node verify-slack.js",
+    "test:auth": "node verify-auth.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.15.0",
@@ -20,6 +21,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "ioredis": "^5.5.0",
+    "jsonwebtoken": "^9.0.3",
     "nodemailer": "^10.0.3",
     "pg": "^8.13.3",
     "zod": "^3.24.2"
@@ -27,6 +29,7 @@
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.13.4",
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.11.11",

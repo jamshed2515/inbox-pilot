@@ -44,6 +44,16 @@ export interface SlackIntegrationRecord {
   updated_at: string;
 }
 
+export interface UserRecord {
+  id: string;
+  google_id?: string | null;
+  email: string;
+  name: string;
+  avatar_url?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // PostgreSQL Connection Pool
 export const pgPool = new Pool({
   connectionString: env.DATABASE_URL,
@@ -133,6 +143,21 @@ export const initDb = async (): Promise<void> => {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_slack_active ON slack_integrations(is_active);
+    `);
+
+    // 5. Create users table for Google OAuth & authentication
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(64) PRIMARY KEY,
+        google_id VARCHAR(128) UNIQUE,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        avatar_url TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
+      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     `);
 
     console.log('📦 PostgreSQL database connected and relational schema verified.');
@@ -366,5 +391,71 @@ export const db = {
   async deleteSlackIntegration(): Promise<boolean> {
     const res = await pgPool.query('DELETE FROM slack_integrations');
     return (res.rowCount ?? 0) > 0;
+  },
+
+  // User Management
+  async findUserById(id: string): Promise<UserRecord | null> {
+    const res = await pgPool.query('SELECT * FROM users WHERE id = $1', [id]);
+    return res.rows[0] || null;
+  },
+
+  async findUserByGoogleId(googleId: string): Promise<UserRecord | null> {
+    const res = await pgPool.query('SELECT * FROM users WHERE google_id = $1', [googleId]);
+    return res.rows[0] || null;
+  },
+
+  async findUserByEmail(email: string): Promise<UserRecord | null> {
+    const res = await pgPool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    return res.rows[0] || null;
+  },
+
+  async upsertGoogleUser(userData: {
+    googleId?: string | null;
+    email: string;
+    name: string;
+    avatarUrl?: string | null;
+  }): Promise<UserRecord> {
+    const existing = userData.googleId
+      ? await this.findUserByGoogleId(userData.googleId)
+      : await this.findUserByEmail(userData.email);
+
+    const now = new Date().toISOString();
+
+    if (existing) {
+      const updateQuery = `
+        UPDATE users
+        SET name = $1,
+            avatar_url = COALESCE($2, avatar_url),
+            google_id = COALESCE($3, google_id),
+            updated_at = $4
+        WHERE id = $5
+        RETURNING *;
+      `;
+      const res = await pgPool.query(updateQuery, [
+        userData.name,
+        userData.avatarUrl || null,
+        userData.googleId || null,
+        now,
+        existing.id,
+      ]);
+      return res.rows[0];
+    } else {
+      const userId = `usr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const insertQuery = `
+        INSERT INTO users (id, google_id, email, name, avatar_url, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *;
+      `;
+      const res = await pgPool.query(insertQuery, [
+        userId,
+        userData.googleId || null,
+        userData.email.toLowerCase(),
+        userData.name,
+        userData.avatarUrl || null,
+        now,
+        now,
+      ]);
+      return res.rows[0];
+    }
   },
 };

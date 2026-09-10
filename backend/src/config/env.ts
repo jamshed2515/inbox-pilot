@@ -39,6 +39,13 @@ const envSchema = z.object({
   SLACK_DEFAULT_CHANNEL: z.string().default('#email-alerts'),
   SLACK_WEBHOOK_URL: z.string().optional(),
   SLACK_BOT_TOKEN: z.string().optional(),
+
+  // Google OAuth & JWT Authentication (Phase F)
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_REDIRECT_URI: z.string().default('http://localhost:5000/api/auth/google/callback'),
+  JWT_SECRET: z.string().default('reachinbox_email_scheduler_jwt_secret_key_2026'),
+  JWT_EXPIRES_IN: z.string().default('7d'),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

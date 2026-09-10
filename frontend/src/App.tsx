@@ -25,7 +25,17 @@ import {
   ShieldAlert,
   Bell,
   Hash,
+  LogOut,
 } from 'lucide-react';
+
+export interface UserProfile {
+  id: string;
+  google_id?: string | null;
+  email: string;
+  name: string;
+  avatar_url?: string | null;
+  created_at?: string;
+}
 
 export interface EmailSenderRecord {
   id: string;
@@ -164,15 +174,33 @@ export default function App() {
   // Modal Email Preview
   const [previewEmail, setPreviewEmail] = useState<EmailRecord | null>(null);
 
+  // Auth State (Phase F - Google OAuth)
+  const [authToken, setAuthToken] = useState<string>(() => localStorage.getItem('reachinbox_token') || '');
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+
   // Update current time tick for live countdowns
   useEffect(() => {
     const timer = setInterval(() => setNowTime(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // Listen for Slack OAuth redirect parameters in URL
+  // Listen for Google and Slack OAuth redirect parameters in URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const urlToken = params.get('token');
+    const authError = params.get('auth_error');
+
+    if (urlToken) {
+      localStorage.setItem('reachinbox_token', urlToken);
+      setAuthToken(urlToken);
+      window.history.replaceState({}, document.title, window.location.pathname);
+      showNotification('🎉 Signed in with Google successfully!');
+    } else if (authError) {
+      showNotification(`Authentication error: ${authError}`, 'error');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
     if (params.get('slack') === 'connected') {
       showNotification('🎉 Slack workspace connected successfully via OAuth!');
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -181,6 +209,72 @@ export default function App() {
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
+
+  // Fetch current user from /api/auth/me
+  useEffect(() => {
+    if (!authToken) {
+      setCurrentUser(null);
+      setAuthLoading(false);
+      return;
+    }
+
+    setAuthLoading(true);
+    fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(res)))
+      .then((data) => {
+        if (data.data?.user) {
+          setCurrentUser(data.data.user);
+        } else {
+          localStorage.removeItem('reachinbox_token');
+          setAuthToken('');
+          setCurrentUser(null);
+        }
+      })
+      .catch(() => {
+        localStorage.removeItem('reachinbox_token');
+        setAuthToken('');
+        setCurrentUser(null);
+      })
+      .finally(() => {
+        setAuthLoading(false);
+      });
+  }, [authToken]);
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // ignore
+    }
+    localStorage.removeItem('reachinbox_token');
+    setAuthToken('');
+    setCurrentUser(null);
+    showNotification('Logged out successfully.');
+  };
+
+  const handleDemoGoogleLogin = async () => {
+    try {
+      const res = await fetch('/api/auth/mock-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'alex.founder@reachinbox.ai',
+          name: 'Alex Founder',
+          avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Login failed');
+      localStorage.setItem('reachinbox_token', data.data.token);
+      setAuthToken(data.data.token);
+      setCurrentUser(data.data.user);
+      showNotification(`Welcome back, ${data.data.user.name}!`);
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    }
+  };
 
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
     setActionMessage({ text, type });
@@ -519,6 +613,69 @@ export default function App() {
               ></span>
               <span className="text-slate-300">{backendOnline ? 'BullMQ Active' : 'Offline'}</span>
             </div>
+
+            {/* User Profile & Logout (Phase F - Google OAuth) */}
+            {currentUser ? (
+              <div className="flex items-center space-x-2 pl-3 border-l border-slate-800">
+                <div className="flex items-center gap-2">
+                  {currentUser.avatar_url ? (
+                    <img
+                      src={currentUser.avatar_url}
+                      alt={currentUser.name}
+                      className="w-8 h-8 rounded-full border border-teal-500/40 object-cover shadow-sm"
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-teal-500 to-indigo-600 flex items-center justify-center text-xs font-bold text-slate-950">
+                      {currentUser.name.charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="hidden xl:block text-left">
+                    <div className="text-xs font-bold text-white truncate max-w-[130px] leading-tight">
+                      {currentUser.name}
+                    </div>
+                    <div className="text-[10px] text-slate-400 font-mono truncate max-w-[130px] leading-tight">
+                      {currentUser.email}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleLogout}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-950/30 hover:bg-rose-900/50 text-rose-300 hover:text-white border border-rose-800/40 text-xs font-medium transition"
+                  title="Logout from session"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Logout</span>
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-2 pl-2 border-l border-slate-800">
+                <button
+                  onClick={handleDemoGoogleLogin}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-teal-500 to-indigo-500 text-slate-950 font-bold text-xs shadow-md shadow-teal-500/20 hover:from-teal-400 hover:to-indigo-400 transition"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
+                    <path
+                      fill="currentColor"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    />
+                    <path
+                      fill="currentColor"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    />
+                    <path
+                      fill="currentColor"
+                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                    />
+                    <path
+                      fill="currentColor"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                    />
+                  </svg>
+                  <span>Google Login</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -551,6 +708,65 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        {/* If user is not logged in: Show Google OAuth Login Screen */}
+        {!currentUser && !authLoading && (
+          <div className="max-w-xl mx-auto my-12 p-8 rounded-3xl border border-slate-800 bg-slate-900/80 shadow-2xl backdrop-blur-xl text-center space-y-6 animate-in fade-in duration-300">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-teal-400 to-indigo-500 flex items-center justify-center mx-auto shadow-xl shadow-teal-500/20">
+              <Mail className="w-8 h-8 text-slate-950" />
+            </div>
+
+            <div className="space-y-2">
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-3 py-1 rounded-full bg-teal-500/10 text-teal-300 border border-teal-500/20">
+                Phase F Authentication
+              </span>
+              <h2 className="text-2xl font-black text-white">Sign in with Google</h2>
+              <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                Connect your account via Google OAuth 2.0. Users are stored in PostgreSQL with signed JWT session authentication.
+              </p>
+            </div>
+
+            <div className="pt-2 space-y-3">
+              <a
+                href="/api/auth/google/login"
+                className="w-full py-3.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold text-sm shadow-xl flex items-center justify-center gap-3 transition"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24">
+                  <path
+                    fill="#4285F4"
+                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                  />
+                </svg>
+                Continue with Google OAuth
+              </a>
+
+              <button
+                onClick={handleDemoGoogleLogin}
+                className="w-full py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-teal-300 font-semibold text-xs border border-teal-500/30 flex items-center justify-center gap-2 transition"
+              >
+                <Sparkles className="w-4 h-4 text-teal-400" />
+                One-Click Demo Google Login (Fast Review)
+              </button>
+            </div>
+
+            <div className="pt-4 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-[10px] text-slate-500 font-mono">
+              <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800">PostgreSQL DB</div>
+              <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800">JWT Signed Session</div>
+              <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800">OAuth 2.0 Scopes</div>
+            </div>
+          </div>
+        )}
         {/* Live Metrics Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           {/* Scheduled in Queue */}
