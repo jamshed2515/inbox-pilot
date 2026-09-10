@@ -9,8 +9,12 @@ import {
   getStats,
   searchEmails,
 } from '../controllers/email.controller';
+import { requireAuth } from '../middlewares/auth.middleware';
 
 const router = Router();
+
+// Protect all email endpoints with JWT authentication
+router.use(requireAuth);
 
 // Schedule single email
 router.post('/schedule', scheduleEmail);

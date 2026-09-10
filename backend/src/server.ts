@@ -4,6 +4,7 @@ import { initDb, pgPool, db } from './config/db';
 import { startEmailWorker } from './workers/email.worker';
 import { redisConnection } from './config/redis';
 import { initElasticsearch, esClient } from './services/elasticsearch.service';
+import { authService } from './services/auth.service';
 
 let worker: ReturnType<typeof startEmailWorker> | null = null;
 
@@ -42,12 +43,26 @@ const startServer = async () => {
   worker = startEmailWorker();
 
   const server = app.listen(env.PORT, () => {
+    const isGoogleConfigured = authService.isGoogleOAuthConfigured();
+    const rawClientId = env.GOOGLE_CLIENT_ID?.trim() || '';
+    const maskedClientId =
+      rawClientId.length > 15
+        ? `${rawClientId.slice(0, 8)}...${rawClientId.slice(-12)}`
+        : rawClientId || 'None';
+
     console.log(`=========================================`);
     console.log(`🚀 Email Scheduler Backend Server Started`);
-    console.log(`📍 Port:        ${env.PORT}`);
-    console.log(`🌍 Environment: ${env.NODE_ENV}`);
-    console.log(`🩺 Health:      http://localhost:${env.PORT}/api/health`);
-    console.log(`✉️  Scheduler:   http://localhost:${env.PORT}/api/emails/stats`);
+    console.log(`📍 Port:            ${env.PORT}`);
+    console.log(`🌍 Environment:     ${env.NODE_ENV}`);
+    console.log(`🩺 Health:          http://localhost:${env.PORT}/api/health`);
+    console.log(`✉️  Scheduler:       http://localhost:${env.PORT}/api/emails/stats`);
+    if (isGoogleConfigured) {
+      console.log(`🔑 Google OAuth:    ✅ Configured (Client ID: ${maskedClientId})`);
+      console.log(`🔗 Redirect URI:    ${env.GOOGLE_REDIRECT_URI}`);
+    } else {
+      console.log(`🔑 Google OAuth:    ⚠️  Not Configured (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set in backend/.env)`);
+      console.log(`✨ Demo Auth:       ✅ Active ("One-Click Demo Google Login" available without credentials)`);
+    }
     console.log(`=========================================`);
   });
 

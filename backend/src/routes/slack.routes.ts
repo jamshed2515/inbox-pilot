@@ -7,25 +7,26 @@ import {
   sendTestAlert,
   disconnectSlack,
 } from '../controllers/slack.controller';
+import { requireAuth } from '../middlewares/auth.middleware';
 
 const router = Router();
 
-// Get connection status & OAuth URL
-router.get('/status', getSlackStatus);
+// Get connection status & OAuth URL (Protected)
+router.get('/status', requireAuth, getSlackStatus);
 
-// Start Slack OAuth
-router.get('/oauth/start', startSlackOAuth);
+// Start Slack OAuth (Protected)
+router.get('/oauth/start', requireAuth, startSlackOAuth);
 
-// Slack OAuth redirect callback
+// Slack OAuth redirect callback (Public for browser redirect exchange)
 router.get('/oauth/callback', handleSlackOAuthCallback);
 
-// Connect direct webhook / bot token
-router.post('/connect', connectDirectSlack);
+// Connect direct webhook / bot token (Protected)
+router.post('/connect', requireAuth, connectDirectSlack);
 
-// Send test rate-limit alert
-router.post('/test', sendTestAlert);
+// Send test rate-limit alert (Protected)
+router.post('/test', requireAuth, sendTestAlert);
 
-// Disconnect
-router.delete('/disconnect', disconnectSlack);
+// Disconnect (Protected)
+router.delete('/disconnect', requireAuth, disconnectSlack);
 
 export default router;

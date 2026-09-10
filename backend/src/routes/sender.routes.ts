@@ -6,8 +6,12 @@ import {
   getSender,
   deleteSender,
 } from '../controllers/sender.controller';
+import { requireAuth } from '../middlewares/auth.middleware';
 
 const router = Router();
+
+// Protect all sender endpoints with JWT authentication
+router.use(requireAuth);
 
 // List all senders
 router.get('/', listSenders);

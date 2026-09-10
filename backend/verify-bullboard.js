@@ -13,15 +13,26 @@ const pool = new Pool({ connectionString: DATABASE_URL });
 const redis = new Redis(REDIS_URL);
 const queue = new Queue('email-scheduler-queue', { connection: redis });
 
+let authToken = '';
+
 function request(method, path, body = null) {
   return new Promise((resolve, reject) => {
     const url = new URL(path, BASE_URL);
+    const headers = { 'Content-Type': 'application/json' };
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const payload = body ? JSON.stringify(body) : null;
+    if (payload) {
+      headers['Content-Length'] = Buffer.byteLength(payload);
+    }
+
     const options = {
       hostname: url.hostname,
       port: url.port,
       path: url.pathname + url.search,
       method: method,
-      headers: { 'Content-Type': 'application/json' },
+      headers,
     };
 
     const req = http.request(options, (res) => {
@@ -38,11 +49,19 @@ function request(method, path, body = null) {
     });
 
     req.on('error', reject);
-    if (body) {
-      req.write(JSON.stringify(body));
+    if (payload) {
+      req.write(payload);
     }
     req.end();
   });
+}
+
+async function authenticateVerifier() {
+  const res = await request('POST', '/api/auth/mock-login', {
+    email: 'verifier.bullboard@reachinbox.ai',
+    name: 'Bull Board Verifier',
+  });
+  authToken = res.body?.data?.token || '';
 }
 
 function sleep(ms) {
@@ -55,6 +74,8 @@ async function runTests() {
   console.log('===========================================================');
 
   try {
+    await authenticateVerifier();
+
     // 1. Verify Bull Board UI Endpoint (/admin/queues)
     console.log('\n[TEST 1] Testing Bull Board endpoint availability (/admin/queues)...');
     const boardRes = await request('GET', '/admin/queues');

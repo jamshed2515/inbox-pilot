@@ -1,9 +1,20 @@
 const http = require('http');
 const { Pool } = require('pg');
 
+let authToken = '';
+
 function request(options, postData) {
   return new Promise((resolve, reject) => {
-    const req = http.request(options, (res) => {
+    const headers = { ...(options.headers || {}) };
+    if (authToken && !headers['Authorization']) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const payload = postData ? JSON.stringify(postData) : null;
+    if (payload && !headers['Content-Length']) {
+      headers['Content-Length'] = Buffer.byteLength(payload);
+    }
+
+    const req = http.request({ ...options, headers }, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
@@ -15,9 +26,23 @@ function request(options, postData) {
       });
     });
     req.on('error', reject);
-    if (postData) req.write(JSON.stringify(postData));
+    if (payload) req.write(payload);
     req.end();
   });
+}
+
+async function authenticateVerifier() {
+  const res = await request(
+    {
+      hostname: '127.0.0.1',
+      port: 5000,
+      path: '/api/auth/mock-login',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    },
+    { email: 'verifier.senders@reachinbox.ai', name: 'Senders Verifier' }
+  );
+  authToken = res.body?.data?.token || '';
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -26,6 +51,8 @@ async function runMultiSenderVerification() {
   console.log('================================================================');
   console.log('STARTING MULTI-SENDER VERIFICATION TEST');
   console.log('================================================================\n');
+
+  await authenticateVerifier();
 
   // STEP 1: Create/Provision Sender 1 & Sender 2
   console.log('Step 1: Creating two distinct persistent senders via API...');

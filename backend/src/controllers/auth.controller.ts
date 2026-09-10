@@ -5,23 +5,49 @@ import { env } from '../config/env';
 
 export const getGoogleAuthUrl = async (req: Request, res: Response): Promise<void> => {
   try {
+    const isConfigured = authService.isGoogleOAuthConfigured();
+    if (!isConfigured) {
+      res.status(400).json({
+        success: false,
+        hasCredentials: false,
+        error: {
+          message:
+            'Google OAuth credentials (GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET) are not configured in backend/.env. Please configure them or use One-Click Demo Google Login.',
+        },
+      });
+      return;
+    }
+
     const url = authService.getGoogleAuthUrl();
     res.json({
       success: true,
       url,
-      hasCredentials: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
+      hasCredentials: true,
     });
   } catch (error: any) {
     res.status(500).json({
       success: false,
+      hasCredentials: false,
       error: { message: error.message || 'Failed to generate Google OAuth URL' },
     });
   }
 };
 
 export const redirectToGoogle = (req: Request, res: Response): void => {
-  const url = authService.getGoogleAuthUrl();
-  res.redirect(url);
+  if (!authService.isGoogleOAuthConfigured()) {
+    const errorMsg =
+      'Google OAuth credentials (GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET) are not configured in backend/.env. Please configure them or use "One-Click Demo Google Login".';
+    console.warn(`⚠️ [Auth] Redirect to Google aborted: ${errorMsg}`);
+    res.redirect(`${env.CLIENT_URL}/?auth_error=${encodeURIComponent(errorMsg)}`);
+    return;
+  }
+
+  try {
+    const url = authService.getGoogleAuthUrl();
+    res.redirect(url);
+  } catch (err: any) {
+    res.redirect(`${env.CLIENT_URL}/?auth_error=${encodeURIComponent(err.message)}`);
+  }
 };
 
 export const handleGoogleCallback = async (req: Request, res: Response): Promise<void> => {
@@ -31,6 +57,14 @@ export const handleGoogleCallback = async (req: Request, res: Response): Promise
   if (error || !code) {
     console.error('⚠️ [Auth] Google OAuth callback error or cancelled:', error);
     res.redirect(`${env.CLIENT_URL}/?auth_error=${encodeURIComponent(error || 'missing_authorization_code')}`);
+    return;
+  }
+
+  if (!authService.isGoogleOAuthConfigured()) {
+    console.error('⚠️ [Auth] Google OAuth callback exchange aborted: credentials not configured');
+    res.redirect(
+      `${env.CLIENT_URL}/?auth_error=${encodeURIComponent('Google OAuth is not configured on server')}`
+    );
     return;
   }
 

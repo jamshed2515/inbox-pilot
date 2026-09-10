@@ -334,7 +334,7 @@ export const db = {
   }> {
     const query = `
       SELECT 
-        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE status IN ('sent', 'failed')) as total,
         COUNT(*) FILTER (WHERE status = 'scheduled') as scheduled,
         COUNT(*) FILTER (WHERE status = 'processing') as processing,
         COUNT(*) FILTER (WHERE status = 'sent') as sent,
@@ -415,9 +415,9 @@ export const db = {
     name: string;
     avatarUrl?: string | null;
   }): Promise<UserRecord> {
-    const existing = userData.googleId
-      ? await this.findUserByGoogleId(userData.googleId)
-      : await this.findUserByEmail(userData.email);
+    const existing = userData.email
+      ? await this.findUserByEmail(userData.email)
+      : (userData.googleId ? await this.findUserByGoogleId(userData.googleId) : null);
 
     const now = new Date().toISOString();
 

@@ -7,6 +7,7 @@ import {
   getCurrentUser,
   logout,
 } from '../controllers/auth.controller';
+import { requireAuth } from '../middlewares/auth.middleware';
 
 const router = Router();
 
@@ -18,8 +19,8 @@ router.get('/google/callback', handleGoogleCallback);
 // Mock/Sandbox login for grading & testing
 router.post('/mock-login', mockLogin);
 
-// Current user profile & session
-router.get('/me', getCurrentUser);
+// Current user profile & session (Protected)
+router.get('/me', requireAuth, getCurrentUser);
 router.post('/logout', logout);
 
 export default router;

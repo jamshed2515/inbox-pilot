@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env';
 import { db, UserRecord } from '../config/db';
@@ -20,10 +21,38 @@ export interface JwtAuthPayload {
 
 export const authService = {
   /**
+   * Checks if genuine, non-placeholder Google OAuth credentials are configured
+   */
+  isGoogleOAuthConfigured(): boolean {
+    const clientId = env.GOOGLE_CLIENT_ID?.trim();
+    const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim();
+    if (!clientId || !clientSecret) {
+      return false;
+    }
+    const placeholders = [
+      'dummy_google_client_id',
+      'your_google_client_id',
+      'your_client_id',
+      'placeholder',
+      'xxx',
+    ];
+    if (placeholders.some((p) => clientId.toLowerCase().includes(p))) {
+      return false;
+    }
+    return true;
+  },
+
+  /**
    * Generates official Google OAuth 2.0 authorization URL
    */
   getGoogleAuthUrl(state?: string): string {
-    const clientId = env.GOOGLE_CLIENT_ID || 'dummy_google_client_id';
+    if (!this.isGoogleOAuthConfigured()) {
+      throw new Error(
+        'Google OAuth credentials are not configured. Please set valid GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in backend/.env, or use One-Click Demo Google Login.'
+      );
+    }
+
+    const clientId = env.GOOGLE_CLIENT_ID!.trim();
     const redirectUri = env.GOOGLE_REDIRECT_URI;
     const scope = 'openid email profile';
 
@@ -47,13 +76,15 @@ export const authService = {
    * Exchanges Google OAuth authorization code for Google user profile
    */
   async exchangeCodeForGoogleUser(code: string): Promise<GoogleUserProfile> {
-    const clientId = env.GOOGLE_CLIENT_ID;
-    const clientSecret = env.GOOGLE_CLIENT_SECRET;
-    const redirectUri = env.GOOGLE_REDIRECT_URI;
-
-    if (!clientId || !clientSecret) {
-      throw new Error('Google OAuth Client ID or Client Secret not configured');
+    if (!this.isGoogleOAuthConfigured()) {
+      throw new Error(
+        'Google OAuth Client ID or Client Secret not configured. Please set valid credentials in backend/.env'
+      );
     }
+
+    const clientId = env.GOOGLE_CLIENT_ID!.trim();
+    const clientSecret = env.GOOGLE_CLIENT_SECRET!.trim();
+    const redirectUri = env.GOOGLE_REDIRECT_URI;
 
     // 1. Exchange code for access token
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
@@ -141,7 +172,7 @@ export const authService = {
     const targetAvatar =
       avatarUrl ||
       'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
-    const targetGoogleId = `goog_${Buffer.from(targetEmail).toString('hex').slice(0, 16)}`;
+    const targetGoogleId = `goog_${crypto.createHash('sha256').update(targetEmail.toLowerCase()).digest('hex').slice(0, 24)}`;
 
     const user = await db.upsertGoogleUser({
       googleId: targetGoogleId,

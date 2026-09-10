@@ -10,13 +10,13 @@ const envSchema = z.object({
 
   // PostgreSQL
   POSTGRES_HOST: z.string().default('localhost'),
-  POSTGRES_PORT: z.coerce.number().default(5432),
+  POSTGRES_PORT: z.coerce.number().default(5433),
   POSTGRES_USER: z.string().default('postgres'),
   POSTGRES_PASSWORD: z.string().default('postgres'),
   POSTGRES_DB: z.string().default('email_scheduler'),
   DATABASE_URL: z
     .string()
-    .default('postgresql://postgres:postgres@localhost:5432/email_scheduler'),
+    .default('postgresql://postgres:postgres@localhost:5433/email_scheduler'),
 
   // Redis
   REDIS_HOST: z.string().default('localhost'),

@@ -29,6 +29,8 @@ import {
   Upload,
   List,
   Grid,
+  Lock,
+  ShieldCheck,
 } from 'lucide-react';
 
 export interface UserProfile {
@@ -215,6 +217,19 @@ export default function App() {
   const [authToken, setAuthToken] = useState<string>(() => localStorage.getItem('reachinbox_token') || '');
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [googleOauthConfigured, setGoogleOauthConfigured] = useState<boolean | null>(null);
+
+  // Check whether Google OAuth credentials are configured on the backend
+  useEffect(() => {
+    fetch('/api/auth/google/url')
+      .then((res) => res.json())
+      .then((data) => {
+        setGoogleOauthConfigured(Boolean(data.hasCredentials));
+      })
+      .catch(() => {
+        setGoogleOauthConfigured(false);
+      });
+  }, []);
 
   // Update current time tick for live countdowns
   useEffect(() => {
@@ -288,6 +303,12 @@ export default function App() {
     localStorage.removeItem('reachinbox_token');
     setAuthToken('');
     setCurrentUser(null);
+    setStats(null);
+    setScheduledEmails([]);
+    setEmailHistory([]);
+    setSenders([]);
+    setSlackStatus(null);
+    setPreviewEmail(null);
     showNotification('Logged out successfully.');
   };
 
@@ -320,15 +341,50 @@ export default function App() {
     }, 5000);
   };
 
-  // Fetch all data
+  // Centralized Authenticated Fetch Helper
+  const authFetch = useCallback(
+    async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
+      const headers = new Headers(init.headers || {});
+      const token = authToken || localStorage.getItem('reachinbox_token');
+      if (token) {
+        headers.set('Authorization', `Bearer ${token}`);
+      }
+
+      const res = await fetch(input, {
+        ...init,
+        headers,
+      });
+
+      if (res.status === 401) {
+        localStorage.removeItem('reachinbox_token');
+        setAuthToken('');
+        setCurrentUser(null);
+        setStats(null);
+        setScheduledEmails([]);
+        setEmailHistory([]);
+        setSenders([]);
+        setSlackStatus(null);
+        setPreviewEmail(null);
+        showNotification('Session expired or unauthorized. Please sign in again.', 'error');
+      }
+
+      return res;
+    },
+    [authToken]
+  );
+
+  // Fetch all data (Authenticated Only)
   const fetchData = useCallback(async () => {
+    const token = authToken || localStorage.getItem('reachinbox_token');
+    if (!token) return;
+
     try {
       const [statsRes, schedRes, histRes, sendersRes, slackRes] = await Promise.all([
-        fetch('/api/emails/stats'),
-        fetch('/api/emails/scheduled'),
-        fetch(`/api/emails/history?status=${historyFilter}`),
-        fetch('/api/senders'),
-        fetch('/api/slack/status'),
+        authFetch('/api/emails/stats'),
+        authFetch('/api/emails/scheduled'),
+        authFetch(`/api/emails/history?status=${historyFilter}`),
+        authFetch('/api/senders'),
+        authFetch('/api/slack/status'),
       ]);
 
       if (statsRes.ok) {
@@ -367,20 +423,23 @@ export default function App() {
     } catch {
       setBackendOnline(false);
     }
-  }, [historyFilter, selectedSenderId]);
+  }, [authFetch, historyFilter, selectedSenderId, authToken]);
 
+  // Fetch data only after user is confirmed authenticated
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (currentUser && authToken) {
+      fetchData();
+    }
+  }, [currentUser, authToken, fetchData]);
 
-  // Auto-polling effect (every 3.5 seconds)
+  // Auto-polling effect (every 3.5 seconds) - only when authenticated
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh || !currentUser || !authToken) return;
     const interval = setInterval(() => {
       fetchData();
     }, 3500);
     return () => clearInterval(interval);
-  }, [autoRefresh, fetchData]);
+  }, [autoRefresh, currentUser, authToken, fetchData]);
 
   // Slack Action Handlers
   const handleConnectSlackWebhook = async (e: React.FormEvent) => {
@@ -388,7 +447,7 @@ export default function App() {
     if (!slackWebhookUrl.trim()) return;
     setSlackConnecting(true);
     try {
-      const res = await fetch('/api/slack/connect', {
+      const res = await authFetch('/api/slack/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ webhookUrl: slackWebhookUrl.trim() }),
@@ -408,7 +467,7 @@ export default function App() {
   const handleTestSlackAlert = async () => {
     setSlackTesting(true);
     try {
-      const res = await fetch('/api/slack/test', { method: 'POST' });
+      const res = await authFetch('/api/slack/test', { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || 'Failed to send alert');
       showNotification('✅ Real Slack rate-limit alert dispatched to channel!');
@@ -421,7 +480,7 @@ export default function App() {
 
   const handleDisconnectSlack = async () => {
     try {
-      const res = await fetch('/api/slack/disconnect', { method: 'DELETE' });
+      const res = await authFetch('/api/slack/disconnect', { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || 'Failed to disconnect');
       showNotification('Slack integration disconnected');
@@ -466,7 +525,7 @@ export default function App() {
           payload.scheduledAt = new Date(scheduledAt).toISOString();
         }
 
-        const res = await fetch('/api/emails/schedule', {
+        const res = await authFetch('/api/emails/schedule', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -491,7 +550,7 @@ export default function App() {
           staggerSeconds: Number(staggerSeconds || 2),
         };
 
-        const res = await fetch('/api/emails/batch', {
+        const res = await authFetch('/api/emails/batch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -541,7 +600,7 @@ export default function App() {
         staggerSeconds: Number(batchStagger),
       };
 
-      const res = await fetch('/api/emails/batch', {
+      const res = await authFetch('/api/emails/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -564,7 +623,7 @@ export default function App() {
   const handleCancelEmail = async (id: string) => {
     if (!confirm('Are you sure you want to cancel this scheduled email?')) return;
     try {
-      const res = await fetch(`/api/emails/${id}`, { method: 'DELETE' });
+      const res = await authFetch(`/api/emails/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || 'Failed to cancel');
       showNotification('Scheduled email cancelled.');
@@ -577,7 +636,7 @@ export default function App() {
   // Retry Failed Email
   const handleRetryEmail = async (id: string) => {
     try {
-      const res = await fetch(`/api/emails/${id}/retry`, { method: 'POST' });
+      const res = await authFetch(`/api/emails/${id}/retry`, { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || 'Retry failed');
       showNotification('Email re-queued for immediate delivery!');
@@ -635,136 +694,117 @@ export default function App() {
           </div>
 
           <div className="flex items-center space-x-3">
-            {/* Auto Refresh Toggle */}
-            <button
-              onClick={() => setAutoRefresh(!autoRefresh)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${
-                autoRefresh
-                  ? 'bg-teal-950/60 text-teal-300 border-teal-800/80'
-                  : 'bg-slate-800 text-slate-400 border-slate-700'
-              }`}
-              title="Toggle Live 3s Polling"
-            >
-              <Radio className={`w-3.5 h-3.5 ${autoRefresh ? 'text-teal-400 animate-pulse' : ''}`} />
-              <span className="hidden sm:inline">{autoRefresh ? 'Live Sync ON' : 'Live Sync OFF'}</span>
-            </button>
-
-            {/* Slack Integration Button */}
-            <button
-              onClick={() => setActiveTab('slack')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
-                slackStatus?.connected
-                  ? 'bg-purple-950/60 text-purple-300 border-purple-800 hover:bg-purple-900/60'
-                  : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-              }`}
-              title="Slack OAuth & Rate Limit Alerting"
-            >
-              <MessageSquare className="w-3.5 h-3.5 text-purple-400" />
-              <span className="hidden md:inline">
-                {slackStatus?.connected ? `Slack: ${slackStatus.data?.channel || 'Active'}` : 'Connect Slack'}
-              </span>
-              {slackStatus?.connected && (
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-              )}
-            </button>
-
-            {/* BullMQ Dashboard Launcher (Phase G) */}
-            <a
-              href="http://localhost:5000/admin/queues"
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition shadow-sm"
-              title="Open Bull Board Queue Dashboard"
-            >
-              <Layers className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden sm:inline">Bull Board</span>
-              <ExternalLink className="w-3 h-3 opacity-70" />
-            </a>
-
-            {/* Manual Refresh Button */}
-            <button
-              onClick={() => {
-                setLoading(true);
-                fetchData().finally(() => setLoading(false));
-              }}
-              disabled={loading}
-              className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition"
-              title="Refresh Data"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-teal-400' : ''}`} />
-            </button>
-
-            {/* Status Indicator */}
-            <div className="flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  backendOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'
-                }`}
-              ></span>
-              <span className="text-slate-300">{backendOnline ? 'BullMQ Active' : 'Offline'}</span>
-            </div>
-
-            {/* User Profile & Logout (Phase F - Google OAuth) */}
-            {currentUser ? (
-              <div className="flex items-center space-x-2 pl-3 border-l border-slate-800">
-                <div className="flex items-center gap-2">
-                  {currentUser.avatar_url ? (
-                    <img
-                      src={currentUser.avatar_url}
-                      alt={currentUser.name}
-                      className="w-8 h-8 rounded-full border border-teal-500/40 object-cover shadow-sm"
-                    />
-                  ) : (
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-teal-500 to-indigo-600 flex items-center justify-center text-xs font-bold text-slate-950">
-                      {currentUser.name.charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                  <div className="hidden xl:block text-left">
-                    <div className="text-xs font-bold text-white truncate max-w-[130px] leading-tight">
-                      {currentUser.name}
-                    </div>
-                    <div className="text-[10px] text-slate-400 font-mono truncate max-w-[130px] leading-tight">
-                      {currentUser.email}
-                    </div>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleLogout}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-950/30 hover:bg-rose-900/50 text-rose-300 hover:text-white border border-rose-800/40 text-xs font-medium transition"
-                  title="Logout from session"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Logout</span>
-                </button>
+            {!currentUser ? (
+              <div className="flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400">
+                <Lock className="w-3.5 h-3.5 text-teal-400" />
+                <span className="hidden sm:inline">Authentication Required</span>
+                <span className="sm:hidden">Sign In</span>
               </div>
             ) : (
-              <div className="flex items-center space-x-2 pl-2 border-l border-slate-800">
+              <>
+                {/* Auto Refresh Toggle */}
                 <button
-                  onClick={handleDemoGoogleLogin}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-teal-500 to-indigo-500 text-slate-950 font-bold text-xs shadow-md shadow-teal-500/20 hover:from-teal-400 hover:to-indigo-400 transition"
+                  onClick={() => setAutoRefresh(!autoRefresh)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${
+                    autoRefresh
+                      ? 'bg-teal-950/60 text-teal-300 border-teal-800/80'
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}
+                  title="Toggle Live 3s Polling"
                 >
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
-                    <path
-                      fill="currentColor"
-                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                    />
-                    <path
-                      fill="currentColor"
-                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                    />
-                    <path
-                      fill="currentColor"
-                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                    />
-                    <path
-                      fill="currentColor"
-                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                    />
-                  </svg>
-                  <span>Google Login</span>
+                  <Radio className={`w-3.5 h-3.5 ${autoRefresh ? 'text-teal-400 animate-pulse' : ''}`} />
+                  <span className="hidden sm:inline">{autoRefresh ? 'Live Sync ON' : 'Live Sync OFF'}</span>
                 </button>
-              </div>
+
+                {/* Slack Connect Button */}
+                <button
+                  onClick={() => setActiveTab('slack')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                    slackStatus?.connected
+                      ? 'bg-purple-950/60 text-purple-300 border-purple-800 hover:bg-purple-900/60'
+                      : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                  }`}
+                  title="Slack OAuth & Rate Limit Alerting"
+                >
+                  <MessageSquare className="w-3.5 h-3.5 text-purple-400" />
+                  <span className="hidden md:inline">
+                    {slackStatus?.connected ? `Slack: ${slackStatus.data?.channel || 'Active'}` : 'Connect Slack'}
+                  </span>
+                  {slackStatus?.connected && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  )}
+                </button>
+
+                {/* BullMQ Dashboard Launcher (Phase G) */}
+                <a
+                  href="http://localhost:5000/admin/queues"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition shadow-sm"
+                  title="Open Bull Board Queue Dashboard"
+                >
+                  <Layers className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="hidden sm:inline">Bull Board</span>
+                  <ExternalLink className="w-3 h-3 opacity-70" />
+                </a>
+
+                {/* Manual Refresh Button */}
+                <button
+                  onClick={() => {
+                    setLoading(true);
+                    fetchData().finally(() => setLoading(false));
+                  }}
+                  disabled={loading}
+                  className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition"
+                  title="Refresh Data"
+                >
+                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-teal-400' : ''}`} />
+                </button>
+
+                {/* Status Indicator */}
+                <div className="flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      backendOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'
+                    }`}
+                  ></span>
+                  <span className="text-slate-300">{backendOnline ? 'BullMQ Active' : 'Offline'}</span>
+                </div>
+
+                {/* User Profile & Logout (Phase F - Google OAuth) */}
+                <div className="flex items-center space-x-2 pl-3 border-l border-slate-800">
+                  <div className="flex items-center gap-2">
+                    {currentUser.avatar_url ? (
+                      <img
+                        src={currentUser.avatar_url}
+                        alt={currentUser.name}
+                        className="w-8 h-8 rounded-full border border-teal-500/40 object-cover shadow-sm"
+                      />
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-teal-500 to-indigo-600 flex items-center justify-center text-xs font-bold text-slate-950">
+                        {currentUser.name.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div className="hidden xl:block text-left">
+                      <div className="text-xs font-bold text-white truncate max-w-[130px] leading-tight">
+                        {currentUser.name}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono truncate max-w-[130px] leading-tight">
+                        {currentUser.email}
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleLogout}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-950/30 hover:bg-rose-900/50 text-rose-300 hover:text-white border border-rose-800/40 text-xs font-medium transition cursor-pointer"
+                    title="Logout from session"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Logout</span>
+                  </button>
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -798,67 +838,127 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* If user is not logged in: Show Google OAuth Login Screen */}
-        {!currentUser && !authLoading && (
-          <div className="max-w-xl mx-auto my-12 p-8 rounded-3xl border border-slate-800 bg-slate-900/80 shadow-2xl backdrop-blur-xl text-center space-y-6 animate-in fade-in duration-300">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-teal-400 to-indigo-500 flex items-center justify-center mx-auto shadow-xl shadow-teal-500/20">
-              <Mail className="w-8 h-8 text-slate-950" />
+        {authLoading ? (
+          /* Loading Splash: Verifying Session */
+          <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-5 animate-in fade-in duration-200">
+            <div className="relative">
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-teal-400 to-indigo-500 flex items-center justify-center shadow-xl shadow-teal-500/20">
+                <Mail className="w-8 h-8 text-slate-950 animate-pulse" />
+              </div>
+              <div className="absolute -inset-1.5 rounded-2xl bg-teal-500/20 blur-md animate-ping"></div>
+            </div>
+            <div className="text-center space-y-1.5">
+              <h3 className="text-base font-bold text-white tracking-wide">Verifying ReachInbox Session</h3>
+              <p className="text-xs text-slate-400 font-mono">Validating JWT authentication state with PostgreSQL...</p>
+            </div>
+          </div>
+        ) : !currentUser ? (
+          /* ONLY LOGIN SCREEN - No dashboard underneath! */
+          <div className="max-w-xl mx-auto my-12 p-8 sm:p-10 rounded-3xl border border-slate-800 bg-slate-900/90 shadow-2xl backdrop-blur-2xl text-center space-y-7 animate-in zoom-in-95 duration-200">
+            <div className="w-18 h-18 rounded-3xl bg-gradient-to-tr from-teal-400 via-teal-300 to-indigo-500 flex items-center justify-center mx-auto shadow-2xl shadow-teal-500/25 p-4">
+              <Mail className="w-10 h-10 text-slate-950" />
             </div>
 
-            <div className="space-y-2">
-              <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-3 py-1 rounded-full bg-teal-500/10 text-teal-300 border border-teal-500/20">
-                Phase F Authentication
-              </span>
-              <h2 className="text-2xl font-black text-white">Sign in with Google</h2>
+            <div className="space-y-2.5">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-500/10 text-teal-300 border border-teal-500/20 text-[11px] font-mono font-bold uppercase tracking-wider">
+                <ShieldCheck className="w-3.5 h-3.5 text-teal-400" />
+                <span>Protected Enterprise Access</span>
+              </div>
+              <h2 className="text-3xl font-black text-white tracking-tight">ReachInbox Scheduler</h2>
               <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
-                Connect your account via Google OAuth 2.0. Users are stored in PostgreSQL with signed JWT session authentication.
+                Sign in to access your email queues, dynamic sender pools, rate limiting, and PostgreSQL persistence dashboard.
               </p>
             </div>
 
-            <div className="pt-2 space-y-3">
-              <a
-                href="/api/auth/google/login"
-                className="w-full py-3.5 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold text-sm shadow-xl flex items-center justify-center gap-3 transition"
-              >
-                <svg className="w-5 h-5" viewBox="0 0 24 24">
-                  <path
-                    fill="#4285F4"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                  />
-                </svg>
-                Continue with Google OAuth
-              </a>
-
+            <div className="pt-2 space-y-3.5">
+              {/* Prominent Primary: One-Click Demo Google Login */}
               <button
                 onClick={handleDemoGoogleLogin}
-                className="w-full py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-teal-300 font-semibold text-xs border border-teal-500/30 flex items-center justify-center gap-2 transition"
+                className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-teal-400 via-teal-500 to-indigo-600 hover:from-teal-300 hover:to-indigo-500 text-slate-950 font-black text-sm shadow-xl shadow-teal-500/25 flex items-center justify-center gap-2.5 transition transform hover:scale-[1.01] active:scale-[0.99] cursor-pointer"
               >
-                <Sparkles className="w-4 h-4 text-teal-400" />
-                One-Click Demo Google Login (Fast Review)
+                <Sparkles className="w-5 h-5 text-slate-950 fill-slate-950" />
+                <span>One-Click Demo Google Login</span>
+                <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-md bg-black/20 text-slate-950 font-bold ml-1">
+                  Instant Access
+                </span>
               </button>
+
+              {/* Secondary: Real Google OAuth (Disabled / Config-Aware) */}
+              {googleOauthConfigured ? (
+                <a
+                  href="/api/auth/google/login"
+                  className="w-full py-3 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold text-xs shadow-lg flex items-center justify-center gap-2.5 transition cursor-pointer"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24">
+                    <path
+                      fill="#4285F4"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                    />
+                  </svg>
+                  <span>Continue with Real Google OAuth</span>
+                </a>
+              ) : (
+                <div className="space-y-2">
+                  <button
+                    disabled
+                    className="w-full py-3 px-4 rounded-xl bg-slate-800/50 border border-slate-700/60 text-slate-400 font-semibold text-xs flex items-center justify-center gap-2.5 cursor-not-allowed opacity-70"
+                    title="Real Google OAuth requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in backend/.env"
+                  >
+                    <svg className="w-4 h-4 opacity-40" viewBox="0 0 24 24">
+                      <path
+                        fill="#4285F4"
+                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                      />
+                      <path
+                        fill="#EA4335"
+                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                      />
+                    </svg>
+                    <span>Continue with Google OAuth (Config Required)</span>
+                  </button>
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-left text-xs text-amber-300 space-y-1">
+                    <p className="text-[11px] text-amber-300/90 leading-relaxed">
+                      <span className="font-semibold text-amber-200">ℹ️ Note on Real Google OAuth:</span> To test with your own Google Cloud project, add <code className="px-1 py-0.5 rounded bg-black/40 font-mono text-amber-200">GOOGLE_CLIENT_ID</code> and <code className="px-1 py-0.5 rounded bg-black/40 font-mono text-amber-200">GOOGLE_CLIENT_SECRET</code> to <code className="font-mono text-amber-200">backend/.env</code>.
+                    </p>
+                    <p className="text-[11px] text-teal-300 font-medium">
+                      👉 For instant evaluation, use <strong>"One-Click Demo Google Login"</strong> above!
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="pt-4 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-[10px] text-slate-500 font-mono">
               <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800">PostgreSQL DB</div>
               <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800">JWT Signed Session</div>
-              <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800">OAuth 2.0 Scopes</div>
+              <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800">BullMQ Protected</div>
             </div>
           </div>
-        )}
-        {/* Live Metrics Grid */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        ) : (
+          /* AUTHENTICATED USER DASHBOARD */
+          <>
+            {/* Live Metrics Grid */}
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           {/* Scheduled in Queue */}
           <div className="rounded-2xl border border-slate-800/90 bg-slate-900/40 p-4 relative overflow-hidden backdrop-blur-sm">
             <div className="absolute top-0 right-0 p-3 opacity-10 text-amber-400 pointer-events-none">
@@ -869,7 +969,7 @@ export default function App() {
               <Clock className="w-4 h-4 text-amber-400" />
             </div>
             <div className="mt-2 text-2xl sm:text-3xl font-black text-amber-300 font-mono">
-              {stats?.queue.delayed ?? scheduledEmails.length}
+              {stats?.database.scheduled ?? scheduledEmails.length}
             </div>
             <div className="text-[11px] text-slate-500 mt-1">Pending Delayed Jobs</div>
           </div>
@@ -2151,10 +2251,12 @@ export default function App() {
             </div>
           </div>
         )}
+          </>
+        )}
       </main>
 
       {/* Email Body Inspector Modal */}
-      {previewEmail && (
+      {currentUser && previewEmail && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
           <div className="bg-slate-900 border border-slate-800 max-w-2xl w-full rounded-2xl p-6 shadow-2xl space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">

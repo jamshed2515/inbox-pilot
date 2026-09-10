@@ -5,9 +5,20 @@ const Redis = require('ioredis');
 const redis = new Redis('redis://127.0.0.1:6379');
 const pool = new Pool({ connectionString: 'postgresql://postgres:postgres@localhost:5433/email_scheduler' });
 
+let authToken = '';
+
 function request(options, postData) {
   return new Promise((resolve, reject) => {
-    const req = http.request(options, (res) => {
+    const headers = { ...(options.headers || {}) };
+    if (authToken && !headers['Authorization']) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const payload = postData ? JSON.stringify(postData) : null;
+    if (payload && !headers['Content-Length']) {
+      headers['Content-Length'] = Buffer.byteLength(payload);
+    }
+
+    const req = http.request({ ...options, headers }, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
@@ -19,9 +30,23 @@ function request(options, postData) {
       });
     });
     req.on('error', reject);
-    if (postData) req.write(JSON.stringify(postData));
+    if (payload) req.write(payload);
     req.end();
   });
+}
+
+async function authenticateVerifier() {
+  const res = await request(
+    {
+      hostname: '127.0.0.1',
+      port: 5000,
+      path: '/api/auth/mock-login',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    },
+    { email: 'verifier.ratelimit@reachinbox.ai', name: 'Rate Limit Verifier' }
+  );
+  authToken = res.body?.data?.token || '';
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -30,6 +55,8 @@ async function runRateLimitVerification() {
   console.log('================================================================');
   console.log('STARTING PHASE D RATE LIMITING & RESCHEDULING VERIFICATION');
   console.log('================================================================\n');
+
+  await authenticateVerifier();
 
   // STEP 1: Create a dedicated sender for rate limit testing
   console.log('Step 1: Creating dedicated test sender...');
