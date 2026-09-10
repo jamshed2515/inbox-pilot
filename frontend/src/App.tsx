@@ -32,6 +32,7 @@ import {
   Lock,
   ShieldCheck,
 } from 'lucide-react';
+import { getApiUrl, BULL_BOARD_URL } from './config/api';
 
 export interface UserProfile {
   id: string;
@@ -221,7 +222,7 @@ export default function App() {
 
   // Check whether Google OAuth credentials are configured on the backend
   useEffect(() => {
-    fetch('/api/auth/google/url')
+    fetch(getApiUrl('/api/auth/google/url'))
       .then((res) => res.json())
       .then((data) => {
         setGoogleOauthConfigured(Boolean(data.hasCredentials));
@@ -271,7 +272,7 @@ export default function App() {
     }
 
     setAuthLoading(true);
-    fetch('/api/auth/me', {
+    fetch(getApiUrl('/api/auth/me'), {
       headers: { Authorization: `Bearer ${authToken}` },
     })
       .then((res) => (res.ok ? res.json() : Promise.reject(res)))
@@ -296,7 +297,7 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      await fetch(getApiUrl('/api/auth/logout'), { method: 'POST' });
     } catch {
       // ignore
     }
@@ -314,7 +315,7 @@ export default function App() {
 
   const handleDemoGoogleLogin = async () => {
     try {
-      const res = await fetch('/api/auth/mock-login', {
+      const res = await fetch(getApiUrl('/api/auth/mock-login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -344,13 +345,14 @@ export default function App() {
   // Centralized Authenticated Fetch Helper
   const authFetch = useCallback(
     async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
+      const url = typeof input === 'string' ? getApiUrl(input) : input;
       const headers = new Headers(init.headers || {});
       const token = authToken || localStorage.getItem('reachinbox_token');
       if (token) {
         headers.set('Authorization', `Bearer ${token}`);
       }
 
-      const res = await fetch(input, {
+      const res = await fetch(url, {
         ...init,
         headers,
       });
@@ -737,7 +739,7 @@ export default function App() {
 
                 {/* BullMQ Dashboard Launcher (Phase G) */}
                 <a
-                  href="http://localhost:5000/admin/queues"
+                  href={BULL_BOARD_URL}
                   target="_blank"
                   rel="noreferrer"
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition shadow-sm"
@@ -886,7 +888,7 @@ export default function App() {
               {/* Secondary: Real Google OAuth (Disabled / Config-Aware) */}
               {googleOauthConfigured ? (
                 <a
-                  href="/api/auth/google/login"
+                  href={getApiUrl('/api/auth/google/login')}
                   className="w-full py-3 px-4 rounded-xl bg-white hover:bg-slate-100 text-slate-900 font-bold text-xs shadow-lg flex items-center justify-center gap-2.5 transition cursor-pointer"
                 >
                   <svg className="w-4 h-4" viewBox="0 0 24 24">
@@ -1194,7 +1196,7 @@ export default function App() {
                 </div>
 
                 <a
-                  href="http://localhost:5000/admin/queues"
+                  href={BULL_BOARD_URL}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold text-xs transition"
@@ -1223,7 +1225,7 @@ export default function App() {
                   </div>
                   <div>
                     <h4 className="text-xs font-bold text-amber-200">
-                      Bull Board Active on <code>http://localhost:5000/admin/queues</code>
+                      Bull Board Active on <code>{BULL_BOARD_URL}</code>
                     </h4>
                     <p className="text-[11px] text-slate-400">
                       Live queue monitoring showing Delayed jobs moving to Active and Completed states.
@@ -1232,7 +1234,7 @@ export default function App() {
                 </div>
 
                 <a
-                  href="http://localhost:5000/admin/queues"
+                  href={BULL_BOARD_URL}
                   target="_blank"
                   rel="noreferrer"
                   className="self-start sm:self-auto px-3 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold text-xs hover:bg-amber-400 transition flex items-center gap-1"
@@ -2100,7 +2102,7 @@ export default function App() {
                       </button>
 
                       <a
-                        href="/api/slack/oauth/start"
+                        href={getApiUrl('/api/slack/oauth/start')}
                         className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold text-center border border-slate-700 transition"
                       >
                         Re-authenticate with OAuth
@@ -2119,7 +2121,7 @@ export default function App() {
                       </p>
                       <div className="pt-2">
                         <a
-                          href="/api/slack/oauth/start"
+                          href={getApiUrl('/api/slack/oauth/start')}
                           className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs shadow-lg shadow-purple-500/20 transition"
                         >
                           <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
