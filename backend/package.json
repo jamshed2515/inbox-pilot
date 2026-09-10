@@ -12,9 +12,12 @@
     "test:senders": "node verify-senders.js",
     "test:ratelimit": "node verify-ratelimit.js",
     "test:slack": "node verify-slack.js",
-    "test:auth": "node verify-auth.js"
+    "test:auth": "node verify-auth.js",
+    "test:bullboard": "node verify-bullboard.js"
   },
   "dependencies": {
+    "@bull-board/api": "^9.10.0",
+    "@bull-board/express": "^9.10.0",
     "@elastic/elasticsearch": "^8.15.0",
     "bullmq": "^5.41.0",
     "cors": "^2.8.5",

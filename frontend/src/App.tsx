@@ -591,6 +591,19 @@ export default function App() {
               )}
             </button>
 
+            {/* BullMQ Dashboard Launcher (Phase G) */}
+            <a
+              href="http://localhost:5000/admin/queues"
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition shadow-sm"
+              title="Open Bull Board Queue Dashboard"
+            >
+              <Layers className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Bull Board</span>
+              <ExternalLink className="w-3 h-3 opacity-70" />
+            </a>
+
             {/* Manual Refresh Button */}
             <button
               onClick={() => {
@@ -972,13 +985,78 @@ export default function App() {
                 </p>
               </div>
 
-              <button
-                onClick={() => setActiveTab('composer')}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold text-xs shadow-md shadow-teal-500/20 transition"
-              >
-                <PlusCircle className="w-3.5 h-3.5" />
-                Schedule New
-              </button>
+              <div className="flex items-center gap-2">
+                <a
+                  href="http://localhost:5000/admin/queues"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold text-xs transition"
+                >
+                  <Layers className="w-3.5 h-3.5 text-amber-400" />
+                  Open Bull Board (/admin/queues)
+                  <ExternalLink className="w-3 h-3 opacity-70" />
+                </a>
+
+                <button
+                  onClick={() => setActiveTab('composer')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 font-semibold text-xs shadow-md shadow-teal-500/20 transition"
+                >
+                  <PlusCircle className="w-3.5 h-3.5" />
+                  Schedule New
+                </button>
+              </div>
+            </div>
+
+            {/* Bull Board Real-Time Queue Visualizer (Phase G) */}
+            <div className="rounded-2xl border border-amber-500/20 bg-amber-950/10 p-4 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-amber-500/20 flex items-center justify-center text-amber-400">
+                    <Layers className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-amber-200">
+                      Bull Board Active on <code>http://localhost:5000/admin/queues</code>
+                    </h4>
+                    <p className="text-[11px] text-slate-400">
+                      Live queue monitoring showing Delayed jobs moving to Active and Completed states.
+                    </p>
+                  </div>
+                </div>
+
+                <a
+                  href="http://localhost:5000/admin/queues"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="self-start sm:self-auto px-3 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold text-xs hover:bg-amber-400 transition flex items-center gap-1"
+                >
+                  <span>Launch Bull Board</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px] font-mono text-center pt-1">
+                <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800">
+                  <span className="text-slate-500 block text-[9px]">1. Schedule</span>
+                  <span className="text-white font-semibold">PostgreSQL Saved</span>
+                </div>
+                <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800">
+                  <span className="text-slate-500 block text-[9px]">2. BullMQ</span>
+                  <span className="text-amber-400 font-semibold">Delayed Job Created</span>
+                </div>
+                <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800">
+                  <span className="text-slate-500 block text-[9px]">3. Bull Board</span>
+                  <span className="text-cyan-400 font-semibold">Shows in "Delayed"</span>
+                </div>
+                <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800">
+                  <span className="text-slate-500 block text-[9px]">4. Worker</span>
+                  <span className="text-indigo-400 font-semibold">Processes Job</span>
+                </div>
+                <div className="p-2 rounded-lg bg-slate-950/80 border border-slate-800 col-span-2 md:col-span-1">
+                  <span className="text-slate-500 block text-[9px]">5. Completed</span>
+                  <span className="text-emerald-400 font-semibold">Status = Sent</span>
+                </div>
+              </div>
             </div>
 
             {filteredScheduled.length === 0 ? (

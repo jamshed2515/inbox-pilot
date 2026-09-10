@@ -2,6 +2,7 @@ import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
 import { env } from './config/env';
 import apiRouter from './routes';
+import { bullBoardAdapter } from './config/bull-board';
 import { errorHandler } from './middlewares/errorHandler';
 
 const app: Application = express();
@@ -21,8 +22,12 @@ app.get('/', (_req: Request, res: Response) => {
   res.json({
     message: 'Email Job Scheduler API is running',
     health: '/api/health',
+    bullBoard: '/admin/queues',
   });
 });
+
+// BullMQ Queue Monitoring Dashboard (Phase G - Bull Board)
+app.use('/admin/queues', bullBoardAdapter.getRouter());
 
 // API Routes
 app.use('/api', apiRouter);
