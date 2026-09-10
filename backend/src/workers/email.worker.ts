@@ -1,9 +1,11 @@
 import { Worker, Job } from 'bullmq';
 import { bullMqConnectionOptions } from '../config/redis';
-import { EMAIL_QUEUE_NAME, EmailJobData } from '../services/queue.service';
+import { EMAIL_QUEUE_NAME, EmailJobData, queueService } from '../services/queue.service';
 import { mailerService } from '../services/mailer.service';
 import { db } from '../config/db';
 import { elasticsearchService } from '../services/elasticsearch.service';
+import { rateLimiterService } from '../services/rateLimiter.service';
+import { env } from '../config/env';
 
 export const startEmailWorker = (): Worker<EmailJobData> => {
   const worker = new Worker<EmailJobData>(
@@ -27,7 +29,52 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
       }
 
       const senderDisplay = sender ? `"${sender.name}" <${sender.email}>` : 'Default Sender';
-      console.log(`\n⏳ [Worker] Processing Job ID: ${job.id} | Email ID: ${id} | From: ${senderDisplay} | To: ${recipient}`);
+      console.log(`\n⏳ [Worker] Job ready: ID ${job.id} | Email: ${id} | Sender: ${senderDisplay} | To: ${recipient}`);
+
+      // Rate limit check in Redis: rate_limit:senderId:currentHour
+      if (sender) {
+        const rateCheck = await rateLimiterService.checkAndIncrementSenderLimit(sender.id);
+        if (!rateCheck.allowed) {
+          const nextHourIso = rateCheck.nextHourIso!;
+          const delayMs = rateCheck.delayMs!;
+          console.log(
+            `🚫 [Worker] Rate limit reached for sender ${senderDisplay} (${rateCheck.currentCount}/${rateCheck.maxLimit} per hour).`
+          );
+          console.log(`⏱️ [Worker] Rescheduling email ${id} for next hour window (${nextHourIso}) in ${Math.round(delayMs / 1000)}s...`);
+
+          // The important rule: Never drop the email when the limit is reached.
+          // It must remain scheduled and eventually be sent.
+          await db.updateEmail(id, {
+            status: 'scheduled',
+            scheduled_at: nextHourIso,
+            error_message: `Hourly rate limit of ${rateCheck.maxLimit}/hr exceeded for sender. Rescheduled for next hour window.`,
+          });
+
+          await elasticsearchService.updateEmailStatus(id, {
+            status: 'scheduled',
+            scheduled_at: nextHourIso,
+            error_message: `Hourly rate limit of ${rateCheck.maxLimit}/hr exceeded for sender. Rescheduled for next hour window.`,
+          });
+
+          // Re-schedule in queue for the calculated next-hour window
+          await queueService.addEmailJob(
+            {
+              ...job.data,
+              scheduledAt: nextHourIso,
+            },
+            delayMs
+          );
+
+          return {
+            rateLimited: true,
+            rescheduled: true,
+            nextWindow: nextHourIso,
+          };
+        }
+
+        // Under limit: Enforce MIN_EMAIL_DELAY_SECONDS spacing
+        await rateLimiterService.enforceMinDelay(sender.id);
+      }
 
       // 1. Update state to 'processing' in PostgreSQL and Elasticsearch
       await db.updateEmail(id, { status: 'processing' });
@@ -87,11 +134,7 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
     },
     {
       connection: bullMqConnectionOptions,
-      concurrency: 5, // Process up to 5 emails in parallel
-      limiter: {
-        max: 10, // Max 10 emails
-        duration: 1000, // per 1000ms (Rate Limiting)
-      },
+      concurrency: env.WORKER_CONCURRENCY,
     }
   );
 
@@ -108,6 +151,6 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
     console.error('⚠️ [Worker] Worker error event:', err.message);
   });
 
-  console.log('👷 BullMQ Email Worker started [Concurrency: 5, Rate Limit: 10/sec]');
+  console.log(`👷 BullMQ Email Worker started [Concurrency: ${env.WORKER_CONCURRENCY}, Min Delay: ${env.MIN_EMAIL_DELAY_SECONDS}s, Hourly Quota: ${env.MAX_EMAILS_PER_HOUR_PER_SENDER}/sender]`);
   return worker;
 };

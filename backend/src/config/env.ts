@@ -26,6 +26,11 @@ const envSchema = z.object({
   // Elasticsearch
   ELASTICSEARCH_NODE: z.string().default('http://127.0.0.1:9200'),
   ELASTICSEARCH_INDEX: z.string().default('emails'),
+
+  // Rate Limiting & Concurrency
+  WORKER_CONCURRENCY: z.coerce.number().default(5),
+  MIN_EMAIL_DELAY_SECONDS: z.coerce.number().default(2),
+  MAX_EMAILS_PER_HOUR_PER_SENDER: z.coerce.number().default(200),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
