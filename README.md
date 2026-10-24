@@ -457,6 +457,9 @@ npm run dev
 | `REDIS_URL` | Redis connection URI for BullMQ | `redis://localhost:6379` | Yes |
 | `JWT_SECRET` | Secret key used to sign session tokens | `reachinbox_email_scheduler_jwt_secret_key_2026` | Yes |
 | `JWT_EXPIRES_IN` | JWT token validity duration | `7d` | Yes |
+| `EMAIL_PROVIDER` | Email transport provider (`ethereal` for sandbox previews, `brevo` for real relay) | `ethereal` | No (defaults to Ethereal) |
+| `ETHEREAL_USER` | Static Ethereal test account username | *(Leave empty for auto-provisioning)* | No |
+| `ETHEREAL_PASS` | Static Ethereal test account password | *(Leave empty for auto-provisioning)* | No |
 | `WORKER_CONCURRENCY` | BullMQ worker concurrency | `5` | No |
 | `MIN_EMAIL_DELAY_SECONDS` | Minimum delay offset | `2` | No |
 | `MAX_EMAILS_PER_HOUR_PER_SENDER` | Hourly limit quota per sender | `200` | No |

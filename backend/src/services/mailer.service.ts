@@ -30,41 +30,83 @@ class MailerService {
 
   private async initTransporter(): Promise<void> {
     try {
-      // Check if custom SMTP is defined in env (e.g. Brevo on port 2525 in Render production)
-      if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-        const defaultPort = process.env.SMTP_HOST.includes('brevo.com') ? 2525 : 587;
-        const port = Number(process.env.SMTP_PORT) || defaultPort;
+      const emailProvider = (process.env.EMAIL_PROVIDER || 'ethereal').toLowerCase();
 
+      // Check if custom / Brevo SMTP is explicitly opted into via EMAIL_PROVIDER=brevo or custom
+      if (emailProvider === 'brevo' || emailProvider === 'custom') {
+        if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+          const defaultPort = process.env.SMTP_HOST.includes('brevo.com') ? 2525 : 587;
+          const port = Number(process.env.SMTP_PORT) || defaultPort;
+
+          this.transporter = nodemailer.createTransport({
+            host: process.env.SMTP_HOST,
+            port,
+            secure: process.env.SMTP_SECURE === 'true' || port === 465,
+            auth: {
+              user: process.env.SMTP_USER,
+              pass: process.env.SMTP_PASS,
+            },
+            pool: true,
+            maxConnections: 5,
+            maxMessages: 100,
+            connectionTimeout: 10000,
+            greetingTimeout: 10000,
+            socketTimeout: 15000,
+          });
+          console.log(`📧 Configured custom/Brevo SMTP email transporter (${process.env.SMTP_HOST}:${port}) with pooled connections`);
+
+          this.transporter
+            .verify()
+            .then(() => console.log(`✅ [SMTP] Relay connection verified (${process.env.SMTP_HOST}:${port})`))
+            .catch((err) => console.warn(`⚠️ [SMTP] Relay verification warning: ${err.message}`));
+
+          return;
+        }
+      }
+
+      // Assignment Primary / Default: Ethereal Fake SMTP
+      // Case A: Statically configured Ethereal credentials (ETHEREAL_USER/PASS or SMTP_HOST=smtp.ethereal.email)
+      const etherealUser = process.env.ETHEREAL_USER || (process.env.SMTP_HOST?.includes('ethereal') ? process.env.SMTP_USER : undefined);
+      const etherealPass = process.env.ETHEREAL_PASS || (process.env.SMTP_HOST?.includes('ethereal') ? process.env.SMTP_PASS : undefined);
+
+      if (etherealUser && etherealPass) {
+        console.log(`📬 Configuring Ethereal SMTP with configured credentials (${etherealUser})...`);
+        this.etherealAccount = {
+          user: etherealUser,
+          pass: etherealPass,
+          smtp: { host: 'smtp.ethereal.email', port: 587, secure: false },
+          imap: { host: 'imap.ethereal.email', port: 993, secure: true },
+          pop3: { host: 'pop3.ethereal.email', port: 995, secure: true },
+          web: 'https://ethereal.email',
+        };
         this.transporter = nodemailer.createTransport({
-          host: process.env.SMTP_HOST,
-          port,
-          secure: process.env.SMTP_SECURE === 'true' || port === 465,
+          host: 'smtp.ethereal.email',
+          port: 587,
+          secure: false,
           auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS,
+            user: etherealUser,
+            pass: etherealPass,
           },
-          pool: true, // Keep connections pooled and warm to avoid reconnect overhead on every job
+          pool: true,
           maxConnections: 5,
           maxMessages: 100,
-          connectionTimeout: 10000, // 10s connection timeout
-          greetingTimeout: 10000,   // 10s greeting timeout
-          socketTimeout: 15000,     // 15s socket timeout
+          connectionTimeout: 10000,
+          greetingTimeout: 10000,
+          socketTimeout: 15000,
         });
-        console.log(`📧 Configured custom SMTP email transporter (${process.env.SMTP_HOST}:${port}) with pooled connections`);
 
-        // Verify SMTP connection in background without blocking server startup
-        this.transporter
-          .verify()
-          .then(() => console.log(`✅ [SMTP] Relay connection verified (${process.env.SMTP_HOST}:${port})`))
-          .catch((err) => console.warn(`⚠️ [SMTP] Relay verification warning: ${err.message}`));
-
+        console.log('=========================================');
+        console.log('🎉 Ethereal Fake SMTP Active (Static Credentials):');
+        console.log(`👤 User: ${this.etherealAccount.user}`);
+        console.log('🔗 Email preview URLs will be generated automatically for every sent message');
+        console.log('=========================================');
         return;
       }
 
-      // Default: Create Ethereal test account for instant sandbox email testing
-      console.log('📬 Creating Ethereal Test Email Account for testing...');
+      // Case B: Zero-config automatic dynamic Ethereal test account (Nodemailer supported)
+      console.log('📬 Provisioning dynamic Ethereal Test Email Account for testing...');
       this.etherealAccount = await nodemailer.createTestAccount();
-      
+
       this.transporter = nodemailer.createTransport({
         host: 'smtp.ethereal.email',
         port: 587,
@@ -73,6 +115,12 @@ class MailerService {
           user: this.etherealAccount.user,
           pass: this.etherealAccount.pass,
         },
+        pool: true,
+        maxConnections: 5,
+        maxMessages: 100,
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
       });
 
       console.log('=========================================');
@@ -125,7 +173,12 @@ class MailerService {
   ): Promise<SendEmailResult> {
     const transporter = await this.getTransporterForSender(sender);
 
-    const isCustomSmtp = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+    const isCustomSmtp = Boolean(
+      (process.env.EMAIL_PROVIDER === 'brevo' || process.env.EMAIL_PROVIDER === 'custom') &&
+      process.env.SMTP_HOST &&
+      process.env.SMTP_USER &&
+      process.env.SMTP_PASS
+    );
     const verifiedFrom = process.env.SMTP_FROM || process.env.SMTP_USER;
 
     let fromHeader: string;
@@ -148,7 +201,7 @@ class MailerService {
         (isCustomSmtp && verifiedFrom ? verifiedFrom : undefined) ||
         (this.etherealAccount
           ? `"ReachInbox Scheduler" <${this.etherealAccount.user}>`
-          : '"ReachInbox Scheduler" <no-reply@reachinbox.ai>');
+          : '"ReachInbox Scheduler" <scheduler@ethereal.email>');
     }
 
     const isHtml = options.body.includes('<') && options.body.includes('>');
@@ -162,7 +215,8 @@ class MailerService {
       replyTo,
     });
 
-    const previewUrl = nodemailer.getTestMessageUrl(info) || null;
+    const testUrl = nodemailer.getTestMessageUrl(info);
+    const previewUrl = testUrl ? String(testUrl) : null;
 
     return {
       messageId: info.messageId,

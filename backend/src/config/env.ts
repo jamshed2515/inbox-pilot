@@ -33,7 +33,10 @@ const envSchema = z.object({
   ELASTICSEARCH_NODE: z.string().optional().default('http://127.0.0.1:9200'),
   ELASTICSEARCH_INDEX: z.string().default('emails'),
 
-  // Custom SMTP Configuration (e.g. Brevo on port 2525 in Render production)
+  // Email Provider & SMTP Configuration
+  EMAIL_PROVIDER: z.enum(['ethereal', 'brevo', 'custom']).default('ethereal'),
+  ETHEREAL_USER: z.string().optional(),
+  ETHEREAL_PASS: z.string().optional(),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().optional().default(587),
   SMTP_USER: z.string().optional(),
