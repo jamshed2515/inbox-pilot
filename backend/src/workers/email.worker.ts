@@ -128,19 +128,27 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
           messageId: result.messageId,
         };
       } catch (error: any) {
-        console.error(`❌ [Worker] Delivery failed for ${recipient} (Attempt ${job.attemptsMade + 1}/${job.opts.attempts}):`, error.message);
+        const attempt = job.attemptsMade + 1;
+        const maxAttempts = job.opts.attempts || 3;
+        console.error(`❌ [Worker] Delivery failed for ${recipient} (Attempt ${attempt}/${maxAttempts}):`, error.message);
 
-        // 3. If this is the final attempt or no attempts left, update state to 'failed'
-        if (job.attemptsMade + 1 >= (job.opts.attempts || 1)) {
+        // If this is the final attempt or no attempts left, update state to 'failed'
+        if (attempt >= maxAttempts) {
           const errorMessage = error.message || 'Unknown delivery failure';
           await db.updateEmail(id, {
             status: 'failed',
             error_message: errorMessage,
-          });
+          }).catch(() => {});
           await elasticsearchService.updateEmailStatus(id, {
             status: 'failed',
             error_message: errorMessage,
-          });
+          }).catch(() => {});
+        } else {
+          // While BullMQ retries with backoff, record attempt info in error_message
+          await db.updateEmail(id, {
+            status: 'scheduled',
+            error_message: `Attempt ${attempt}/${maxAttempts} failed: ${error.message}. Retrying...`,
+          }).catch(() => {});
         }
 
         throw error; // Rethrow to let BullMQ handle retry and backoff
@@ -149,16 +157,35 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
     {
       connection: bullMqConnectionOptions,
       concurrency: env.WORKER_CONCURRENCY,
+      lockDuration: 60000, // 60s lock gives ample time for cloud SMTP delivery
+      lockRenewTime: 20000, // renew lock every 20s
+      stalledInterval: 15000, // check for stalled jobs every 15s to recover fast from restarts
+      maxStalledCount: 2,
     }
   );
-
 
   worker.on('completed', (job) => {
     console.log(`🎉 [Worker] Job ${job.id} completed successfully`);
   });
 
-  worker.on('failed', (job, err) => {
+  worker.on('failed', async (job, err) => {
     console.error(`💥 [Worker] Job ${job?.id} failed with error:`, err.message);
+    if (job?.data?.id) {
+      const emailId = job.data.id;
+      const errorMessage = err.message || 'Delivery failed after all retry attempts';
+      await db.updateEmail(emailId, {
+        status: 'failed',
+        error_message: errorMessage,
+      }).catch((e) => console.error(`Failed to update failed status for ${emailId}:`, e.message));
+      await elasticsearchService.updateEmailStatus(emailId, {
+        status: 'failed',
+        error_message: errorMessage,
+      }).catch(() => {});
+    }
+  });
+
+  worker.on('stalled', (jobId) => {
+    console.warn(`⚠️ [Worker] Job ${jobId} was detected as stalled. BullMQ will reprocess it.`);
   });
 
   worker.on('error', (err) => {

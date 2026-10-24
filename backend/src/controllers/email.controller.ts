@@ -60,6 +60,13 @@ export const scheduleEmail = async (req: Request, res: Response): Promise<void> 
     } else if (validated.scheduledAt) {
       const parsedDate = new Date(validated.scheduledAt).getTime();
       if (!isNaN(parsedDate)) {
+        if (parsedDate < now - 60000) {
+          res.status(400).json({
+            success: false,
+            error: { message: 'Scheduled time cannot be in the past. Please select a future date and time.' },
+          });
+          return;
+        }
         scheduledTimeMs = parsedDate;
         delayMs = Math.max(0, parsedDate - now);
       }

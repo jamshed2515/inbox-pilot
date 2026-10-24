@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Mail,
   Calendar,
@@ -142,6 +142,7 @@ export default function App() {
   const [selectedSenderId, setSelectedSenderId] = useState<string>('');
   const [batchSenderId, setBatchSenderId] = useState<string>('');
   const [stats, setStats] = useState<StatsData | null>(null);
+  const isFetchingRef = useRef<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [backendOnline, setBackendOnline] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
@@ -379,6 +380,8 @@ export default function App() {
   const fetchData = useCallback(async () => {
     const token = authToken || localStorage.getItem('reachinbox_token');
     if (!token) return;
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
 
     try {
       const [statsRes, schedRes, histRes, sendersRes, slackRes] = await Promise.all([
@@ -424,6 +427,8 @@ export default function App() {
       }
     } catch {
       setBackendOnline(false);
+    } finally {
+      isFetchingRef.current = false;
     }
   }, [authFetch, historyFilter, selectedSenderId, authToken]);
 
@@ -536,7 +541,14 @@ export default function App() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error?.message || 'Scheduling failed');
 
+        if (data.data?.email) {
+          setScheduledEmails((prev) => [data.data.email, ...prev.filter((e) => e.id !== data.data.email.id)]);
+        }
+
         showNotification(data.message || 'Email scheduled successfully!');
+        setRecipient('');
+        setSubject('');
+        setBody(EMAIL_TEMPLATES[0].body);
       } else {
         // Multiple / CSV Batch Scheduling
         const payload = {
@@ -562,9 +574,12 @@ export default function App() {
         if (!res.ok) throw new Error(data.error?.message || 'Batch scheduling failed');
 
         showNotification(`🎉 Scheduled batch of ${emailList.length} emails with ${staggerSeconds}s stagger!`);
+        setRecipient('');
+        setSubject('');
+        setBody(EMAIL_TEMPLATES[0].body);
       }
 
-      fetchData();
+      await fetchData();
       setActiveTab('queue');
     } catch (err: any) {
       showNotification(err.message, 'error');
@@ -612,7 +627,8 @@ export default function App() {
       if (!res.ok) throw new Error(data.error?.message || 'Batch scheduling failed');
 
       showNotification(`Batch of ${emailList.length} emails scheduled successfully!`);
-      fetchData();
+      setBatchRecipients('');
+      await fetchData();
       setActiveTab('queue');
     } catch (err: any) {
       showNotification(err.message, 'error');
@@ -666,9 +682,13 @@ export default function App() {
   });
 
   // Calculate countdown time string
-  const formatCountdown = (scheduledIso: string) => {
+  const formatCountdown = (scheduledIso: string, status?: string) => {
+    if (status === 'processing') return 'Delivering now...';
     const diffMs = new Date(scheduledIso).getTime() - nowTime;
-    if (diffMs <= 0) return 'Sending now...';
+    if (diffMs <= 0) {
+      if (diffMs < -45000) return 'Queued (in progress)';
+      return 'Sending now...';
+    }
     const totalSecs = Math.floor(diffMs / 1000);
     const mins = Math.floor(totalSecs / 60);
     const secs = totalSecs % 60;
@@ -1288,10 +1308,17 @@ export default function App() {
                         <tr key={item.id} className="hover:bg-slate-800/30 transition">
                           {/* Status */}
                           <td className="py-3.5 px-4 whitespace-nowrap">
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 font-semibold text-[11px]">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                              Scheduled
-                            </span>
+                            {item.status === 'processing' ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 font-semibold text-[11px]">
+                                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>
+                                Processing
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20 font-semibold text-[11px]">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                                Scheduled
+                              </span>
+                            )}
                           </td>
 
                           {/* Recipient */}
@@ -1316,8 +1343,12 @@ export default function App() {
 
                           {/* Countdown */}
                           <td className="py-3.5 px-4 whitespace-nowrap">
-                            <span className="font-mono text-amber-300 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/50 text-[11px]">
-                              {formatCountdown(item.scheduled_at)}
+                            <span className={`font-mono px-2 py-0.5 rounded border text-[11px] ${
+                              item.status === 'processing'
+                                ? 'text-cyan-300 bg-cyan-950/60 border-cyan-800/50'
+                                : 'text-amber-300 bg-amber-950/60 border-amber-800/50'
+                            }`}>
+                              {formatCountdown(item.scheduled_at, item.status)}
                             </span>
                           </td>
 
@@ -1353,9 +1384,13 @@ export default function App() {
                   >
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <span className="inline-flex items-center gap-1.5 text-[11px] font-mono font-medium px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20">
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                          {formatCountdown(item.scheduled_at)}
+                        <span className={`inline-flex items-center gap-1.5 text-[11px] font-mono font-medium px-2.5 py-1 rounded-full border ${
+                          item.status === 'processing'
+                            ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
+                            : 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+                        }`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${item.status === 'processing' ? 'bg-cyan-400 animate-ping' : 'bg-amber-400 animate-pulse'}`}></span>
+                          {formatCountdown(item.scheduled_at, item.status)}
                         </span>
                         <span className="text-[10px] text-slate-500 font-mono">
                           ID: {item.id.slice(-6)}

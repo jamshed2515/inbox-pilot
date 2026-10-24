@@ -16,9 +16,15 @@ function resolveRedisConfig(): {
   const commonOptions: RedisOptions = {
     maxRetriesPerRequest: null, // Required by BullMQ
     enableReadyCheck: false,
+    connectTimeout: 10000,
+    keepAlive: 10000, // 10s TCP keepalive prevents Render/cloud routers from dropping idle sockets
     retryStrategy(times) {
-      const delay = Math.min(times * 200, 2000);
+      const delay = Math.min(times * 250, 3000);
       return delay;
+    },
+    reconnectOnError(err) {
+      const targetErrors = ['READONLY', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE'];
+      return targetErrors.some((target) => err.message.includes(target));
     },
   };
 
@@ -37,7 +43,7 @@ function resolveRedisConfig(): {
         username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
         password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
         db: parsed.pathname && parsed.pathname.length > 1 ? parseInt(parsed.pathname.slice(1), 10) : undefined,
-        tls: isTls ? { rejectUnauthorized: false } : undefined,
+        tls: isTls ? { rejectUnauthorized: false, servername: host } : undefined,
       };
 
       return {

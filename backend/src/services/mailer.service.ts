@@ -32,7 +32,9 @@ class MailerService {
     try {
       // Check if custom SMTP is defined in env (e.g. Brevo on port 2525 in Render production)
       if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-        const port = Number(process.env.SMTP_PORT) || 2525;
+        const defaultPort = process.env.SMTP_HOST.includes('brevo.com') ? 2525 : 587;
+        const port = Number(process.env.SMTP_PORT) || defaultPort;
+
         this.transporter = nodemailer.createTransport({
           host: process.env.SMTP_HOST,
           port,
@@ -41,8 +43,21 @@ class MailerService {
             user: process.env.SMTP_USER,
             pass: process.env.SMTP_PASS,
           },
+          pool: true, // Keep connections pooled and warm to avoid reconnect overhead on every job
+          maxConnections: 5,
+          maxMessages: 100,
+          connectionTimeout: 10000, // 10s connection timeout
+          greetingTimeout: 10000,   // 10s greeting timeout
+          socketTimeout: 15000,     // 15s socket timeout
         });
-        console.log(`📧 Configured custom SMTP email transporter (${process.env.SMTP_HOST}:${port})`);
+        console.log(`📧 Configured custom SMTP email transporter (${process.env.SMTP_HOST}:${port}) with pooled connections`);
+
+        // Verify SMTP connection in background without blocking server startup
+        this.transporter
+          .verify()
+          .then(() => console.log(`✅ [SMTP] Relay connection verified (${process.env.SMTP_HOST}:${port})`))
+          .catch((err) => console.warn(`⚠️ [SMTP] Relay verification warning: ${err.message}`));
+
         return;
       }
 

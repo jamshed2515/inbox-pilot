@@ -54,16 +54,37 @@ export interface UserRecord {
   updated_at: string;
 }
 
-// PostgreSQL Connection Pool
-export const pgPool = new Pool({
-  connectionString: env.DATABASE_URL,
-  host: env.POSTGRES_HOST,
-  port: env.POSTGRES_PORT,
-  user: env.POSTGRES_USER,
-  password: env.POSTGRES_PASSWORD,
-  database: env.POSTGRES_DB,
-  ssl: false,
-  connectionTimeoutMillis: 5000,
+// Determine if connecting to a remote/cloud PostgreSQL instance (e.g. Render, Supabase, Neon)
+const isCloudDatabase = Boolean(
+  (env.DATABASE_URL &&
+    !env.DATABASE_URL.includes('localhost') &&
+    !env.DATABASE_URL.includes('127.0.0.1')) ||
+  env.NODE_ENV === 'production'
+);
+
+// PostgreSQL Connection Pool Configuration
+export const pgPool = env.DATABASE_URL && !env.DATABASE_URL.includes('localhost:5433')
+  ? new Pool({
+      connectionString: env.DATABASE_URL,
+      ssl: isCloudDatabase ? { rejectUnauthorized: false } : false,
+      max: 20,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    })
+  : new Pool({
+      host: env.POSTGRES_HOST,
+      port: env.POSTGRES_PORT,
+      user: env.POSTGRES_USER,
+      password: env.POSTGRES_PASSWORD,
+      database: env.POSTGRES_DB,
+      ssl: false,
+      max: 20,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    });
+
+pgPool.on('error', (err) => {
+  console.error('⚠️ [PostgreSQL Pool] Unexpected error on idle client:', err.message);
 });
 
 /**
@@ -300,7 +321,7 @@ export const db = {
 
   async getScheduledEmails(): Promise<EmailRecord[]> {
     const res = await pgPool.query(
-      "SELECT * FROM emails WHERE status = 'scheduled' ORDER BY scheduled_at ASC"
+      "SELECT * FROM emails WHERE status IN ('scheduled', 'processing') ORDER BY scheduled_at ASC"
     );
     return res.rows;
   },
