@@ -4,8 +4,10 @@ import {
   batchScheduleEmails,
   getScheduledEmails,
   getEmailHistory,
+  getEmailById,
   cancelEmail,
   retryEmail,
+  deleteEmail,
   getStats,
   searchEmails,
 } from '../controllers/email.controller';
@@ -33,6 +35,12 @@ router.get('/stats', getStats);
 
 // Search emails
 router.get('/search', searchEmails);
+
+// Get single email details (scoped to owner)
+router.get('/:id', getEmailById);
+
+// Delete an email record (scoped to owner)
+router.delete('/:id/delete', deleteEmail);
 
 // Cancel a scheduled email
 router.delete('/:id', cancelEmail);

@@ -1,8 +1,10 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import jwt from 'jsonwebtoken';
 import { slackService } from '../services/slack.service';
 import { db } from '../config/db';
 import { env } from '../config/env';
+import { AuthenticatedRequest } from '../middlewares/auth.middleware';
 
 const connectSchema = z.object({
   webhookUrl: z.string().url().optional(),
@@ -11,9 +13,10 @@ const connectSchema = z.object({
   teamName: z.string().optional(),
 });
 
-export const getSlackStatus = async (_req: Request, res: Response): Promise<void> => {
+export const getSlackStatus = async (req: Request, res: Response): Promise<void> => {
   try {
-    const integration = await slackService.getActiveIntegration();
+    const userId = (req as AuthenticatedRequest).user!.id;
+    const integration = await slackService.getActiveIntegration(userId);
     res.json({
       success: true,
       connected: !!integration,
@@ -36,19 +39,20 @@ export const getSlackStatus = async (_req: Request, res: Response): Promise<void
   }
 };
 
-export const startSlackOAuth = (_req: Request, res: Response): void => {
+export const startSlackOAuth = (req: Request, res: Response): void => {
   if (!env.SLACK_CLIENT_ID || env.SLACK_CLIENT_ID === 'dummy_client_id') {
-    // If not configured in environment, redirect to frontend with info or inform user
     res.redirect(`${env.CLIENT_URL}/?slack_error=missing_credentials`);
     return;
   }
-  const authUrl = slackService.getOAuthAuthorizeUrl();
+  const userId = (req as AuthenticatedRequest).user!.id;
+  const state = jwt.sign({ userId, type: 'slack_oauth' }, env.JWT_SECRET, { expiresIn: '15m' });
+  const authUrl = slackService.getOAuthAuthorizeUrl(state);
   res.redirect(authUrl);
 };
 
 export const handleSlackOAuthCallback = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { code, error } = req.query;
+    const { code, error, state } = req.query;
     if (error) {
       res.redirect(`${env.CLIENT_URL}/?slack_error=${encodeURIComponent(String(error))}`);
       return;
@@ -58,7 +62,22 @@ export const handleSlackOAuthCallback = async (req: Request, res: Response): Pro
       return;
     }
 
-    await slackService.exchangeCodeForToken(String(code));
+    if (!state || typeof state !== 'string') {
+      res.redirect(`${env.CLIENT_URL}/?slack_error=missing_state`);
+      return;
+    }
+
+    let userId: string;
+    try {
+      const decoded = jwt.verify(state, env.JWT_SECRET) as any;
+      if (!decoded.userId) throw new Error('Invalid state token');
+      userId = decoded.userId;
+    } catch {
+      res.redirect(`${env.CLIENT_URL}/?slack_error=invalid_or_expired_state`);
+      return;
+    }
+
+    await slackService.exchangeCodeForToken(String(code), userId);
     res.redirect(`${env.CLIENT_URL}/?slack=connected`);
   } catch (err: any) {
     console.error('Error handling Slack OAuth callback:', err.message);
@@ -68,6 +87,7 @@ export const handleSlackOAuthCallback = async (req: Request, res: Response): Pro
 
 export const connectDirectSlack = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const validated = connectSchema.parse(req.body);
     if (!validated.webhookUrl && !validated.botToken) {
       res.status(400).json({
@@ -77,7 +97,7 @@ export const connectDirectSlack = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    const saved = await slackService.saveDirectCredentials(validated);
+    const saved = await slackService.saveDirectCredentials(validated, userId);
     res.status(201).json({
       success: true,
       message: 'Slack credentials connected and saved successfully',
@@ -101,9 +121,11 @@ export const connectDirectSlack = async (req: Request, res: Response): Promise<v
   }
 };
 
-export const sendTestAlert = async (_req: Request, res: Response): Promise<void> => {
+export const sendTestAlert = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const result = await slackService.sendRateLimitAlert({
+      userId,
       senderId: 'demo_sender_99',
       senderName: 'VIP Growth Outbound',
       senderEmail: 'growth.vip@reachinbox-scheduler.io',
@@ -127,9 +149,10 @@ export const sendTestAlert = async (_req: Request, res: Response): Promise<void>
   }
 };
 
-export const disconnectSlack = async (_req: Request, res: Response): Promise<void> => {
+export const disconnectSlack = async (req: Request, res: Response): Promise<void> => {
   try {
-    await db.deleteSlackIntegration();
+    const userId = (req as AuthenticatedRequest).user!.id;
+    await db.deleteSlackIntegration(userId);
     res.json({
       success: true,
       message: 'Slack integration disconnected successfully',

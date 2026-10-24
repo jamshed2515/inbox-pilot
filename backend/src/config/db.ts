@@ -3,6 +3,7 @@ import { env } from './env';
 
 export interface EmailSenderRecord {
   id: string;
+  user_id?: string | null;
   name: string;
   email: string;
   smtp_host?: string | null;
@@ -16,6 +17,7 @@ export interface EmailSenderRecord {
 
 export interface EmailRecord {
   id: string;
+  user_id?: string | null;
   job_id: string;
   sender_id?: string | null;
   recipient: string;
@@ -32,6 +34,7 @@ export interface EmailRecord {
 
 export interface SlackIntegrationRecord {
   id: string;
+  user_id?: string | null;
   team_id?: string | null;
   team_name?: string | null;
   access_token?: string | null;
@@ -89,19 +92,35 @@ pgPool.on('error', (err) => {
 
 /**
  * Initializes the PostgreSQL database connection and verifies/creates the table schema.
- * If PostgreSQL is unreachable or authentication fails, this function throws an error
- * to halt server startup immediately with a clear diagnostic message.
+ * Performs idempotent migrations adding user_id ownership columns and indexes.
  */
 export const initDb = async (): Promise<void> => {
   let client;
   try {
     client = await pgPool.connect();
-    // 1. Create email_senders table
+
+    // 1. Create users table first for foreign key references
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(64) PRIMARY KEY,
+        google_id VARCHAR(128) UNIQUE,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        avatar_url TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
+      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    `);
+
+    // 2. Create email_senders table with user_id
     await client.query(`
       CREATE TABLE IF NOT EXISTS email_senders (
         id VARCHAR(64) PRIMARY KEY,
+        user_id VARCHAR(64) REFERENCES users(id) ON DELETE SET NULL,
         name VARCHAR(255) NOT NULL,
-        email VARCHAR(255) NOT NULL UNIQUE,
+        email VARCHAR(255) NOT NULL,
         smtp_host VARCHAR(255),
         smtp_port INTEGER,
         smtp_user VARCHAR(255),
@@ -113,10 +132,31 @@ export const initDb = async (): Promise<void> => {
       CREATE INDEX IF NOT EXISTS idx_senders_email ON email_senders(email);
     `);
 
-    // 2. Create emails table
+    // Idempotent migration for email_senders
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name='email_senders' AND column_name='user_id'
+        ) THEN
+          ALTER TABLE email_senders ADD COLUMN user_id VARCHAR(64) REFERENCES users(id) ON DELETE SET NULL;
+        END IF;
+
+        IF EXISTS (
+          SELECT 1 FROM information_schema.table_constraints 
+          WHERE table_name = 'email_senders' AND constraint_type = 'UNIQUE' AND constraint_name = 'email_senders_email_key'
+        ) THEN
+          ALTER TABLE email_senders DROP CONSTRAINT email_senders_email_key;
+        END IF;
+      END $$;
+      CREATE INDEX IF NOT EXISTS idx_senders_user_id ON email_senders(user_id);
+    `);
+
+    // 3. Create emails table with user_id
     await client.query(`
       CREATE TABLE IF NOT EXISTS emails (
         id VARCHAR(64) PRIMARY KEY,
+        user_id VARCHAR(64) REFERENCES users(id) ON DELETE SET NULL,
         job_id VARCHAR(64),
         sender_id VARCHAR(64) REFERENCES email_senders(id) ON DELETE SET NULL,
         recipient VARCHAR(255) NOT NULL,
@@ -135,9 +175,16 @@ export const initDb = async (): Promise<void> => {
       CREATE INDEX IF NOT EXISTS idx_emails_created_at ON emails(created_at DESC);
     `);
 
-    // 3. Ensure sender_id and preview_url columns exist in existing emails table
+    // Idempotent migration for emails
     await client.query(`
       DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name='emails' AND column_name='user_id'
+        ) THEN
+          ALTER TABLE emails ADD COLUMN user_id VARCHAR(64) REFERENCES users(id) ON DELETE SET NULL;
+        END IF;
+
         IF NOT EXISTS (
           SELECT 1 FROM information_schema.columns 
           WHERE table_name='emails' AND column_name='sender_id'
@@ -152,13 +199,16 @@ export const initDb = async (): Promise<void> => {
           ALTER TABLE emails ADD COLUMN preview_url TEXT;
         END IF;
       END $$;
+      CREATE INDEX IF NOT EXISTS idx_emails_user_id ON emails(user_id);
+      CREATE INDEX IF NOT EXISTS idx_emails_user_status ON emails(user_id, status);
       CREATE INDEX IF NOT EXISTS idx_emails_sender_id ON emails(sender_id);
     `);
 
-    // 4. Create slack_integrations table
+    // 4. Create slack_integrations table with user_id
     await client.query(`
       CREATE TABLE IF NOT EXISTS slack_integrations (
         id VARCHAR(64) PRIMARY KEY,
+        user_id VARCHAR(64) REFERENCES users(id) ON DELETE SET NULL,
         team_id VARCHAR(64),
         team_name VARCHAR(255),
         access_token TEXT,
@@ -173,22 +223,20 @@ export const initDb = async (): Promise<void> => {
       CREATE INDEX IF NOT EXISTS idx_slack_active ON slack_integrations(is_active);
     `);
 
-    // 5. Create users table for Google OAuth & authentication
+    // Idempotent migration for slack_integrations
     await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id VARCHAR(64) PRIMARY KEY,
-        google_id VARCHAR(128) UNIQUE,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        name VARCHAR(255) NOT NULL,
-        avatar_url TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
-      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name='slack_integrations' AND column_name='user_id'
+        ) THEN
+          ALTER TABLE slack_integrations ADD COLUMN user_id VARCHAR(64) REFERENCES users(id) ON DELETE SET NULL;
+        END IF;
+      END $$;
+      CREATE INDEX IF NOT EXISTS idx_slack_user_id ON slack_integrations(user_id);
     `);
 
-    console.log('📦 PostgreSQL database connected and relational schema verified.');
+    console.log('📦 PostgreSQL database connected and multi-tenant schema verified.');
   } catch (error: any) {
     console.error('================================================================');
     console.error('❌ FATAL: PostgreSQL database connection failed!');
@@ -213,15 +261,16 @@ export const db = {
   async insertEmail(email: EmailRecord): Promise<EmailRecord> {
     const query = `
       INSERT INTO emails (
-        id, job_id, sender_id, recipient, subject, body, status, 
+        id, user_id, job_id, sender_id, recipient, subject, body, status, 
         scheduled_at, sent_at, error_message, preview_url, 
         created_at, updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *;
     `;
     const values = [
       email.id,
+      email.user_id || null,
       email.job_id,
       email.sender_id || null,
       email.recipient,
@@ -239,17 +288,18 @@ export const db = {
     return res.rows[0];
   },
 
-  // Senders operations
+  // Senders operations (Strictly scoped to user_id)
   async createSender(sender: EmailSenderRecord): Promise<EmailSenderRecord> {
     const query = `
       INSERT INTO email_senders (
-        id, name, email, smtp_host, smtp_port, smtp_user, smtp_pass, is_default, created_at, updated_at
+        id, user_id, name, email, smtp_host, smtp_port, smtp_user, smtp_pass, is_default, created_at, updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING *;
     `;
     const values = [
       sender.id,
+      sender.user_id || null,
       sender.name,
       sender.email,
       sender.smtp_host || null,
@@ -264,71 +314,99 @@ export const db = {
     return res.rows[0];
   },
 
-  async getSenders(): Promise<EmailSenderRecord[]> {
+  async getSenders(userId?: string): Promise<EmailSenderRecord[]> {
+    if (userId) {
+      const res = await pgPool.query(
+        'SELECT * FROM email_senders WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC',
+        [userId]
+      );
+      return res.rows;
+    }
     const res = await pgPool.query(
       'SELECT * FROM email_senders ORDER BY is_default DESC, created_at ASC'
     );
     return res.rows;
   },
 
-  async getSenderById(id: string): Promise<EmailSenderRecord | null> {
+  async getSenderById(id: string, userId?: string): Promise<EmailSenderRecord | null> {
+    if (userId) {
+      const res = await pgPool.query(
+        'SELECT * FROM email_senders WHERE id = $1 AND user_id = $2 LIMIT 1',
+        [id, userId]
+      );
+      return res.rows[0] || null;
+    }
+    const res = await pgPool.query('SELECT * FROM email_senders WHERE id = $1 LIMIT 1', [id]);
+    return res.rows[0] || null;
+  },
+
+  async getDefaultSender(userId: string): Promise<EmailSenderRecord | null> {
     const res = await pgPool.query(
-      'SELECT * FROM email_senders WHERE id = $1 LIMIT 1',
-      [id]
+      'SELECT * FROM email_senders WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1',
+      [userId]
     );
     return res.rows[0] || null;
   },
 
-  async getDefaultSender(): Promise<EmailSenderRecord | null> {
-    const res = await pgPool.query(
-      'SELECT * FROM email_senders ORDER BY is_default DESC, created_at ASC LIMIT 1'
-    );
-    return res.rows[0] || null;
-  },
-
-  async deleteSender(id: string): Promise<boolean> {
-    const res = await pgPool.query('DELETE FROM email_senders WHERE id = $1', [id]);
+  async deleteSender(id: string, userId: string): Promise<boolean> {
+    const res = await pgPool.query('DELETE FROM email_senders WHERE id = $1 AND user_id = $2', [id, userId]);
     return (res.rowCount ?? 0) > 0;
   },
 
   async updateEmail(
     id: string,
-    updates: Partial<Omit<EmailRecord, 'id'>>
+    updates: Partial<Omit<EmailRecord, 'id'>>,
+    userId?: string
   ): Promise<EmailRecord | null> {
     const fields = Object.keys(updates);
     if (fields.length === 0) {
-      return this.getEmailById(id);
+      return this.getEmailById(id, userId);
     }
 
     const updatedAt = new Date().toISOString();
     const setClauses = fields.map((f, idx) => `"${f}" = $${idx + 2}`).join(', ');
-    const values = [id, ...Object.values(updates), updatedAt];
+    const values: any[] = [id, ...Object.values(updates), updatedAt];
 
-    const query = `
+    let query = `
       UPDATE emails
       SET ${setClauses}, updated_at = $${fields.length + 2}
       WHERE id = $1
-      RETURNING *;
     `;
+    if (userId) {
+      values.push(userId);
+      query += ` AND user_id = $${values.length}`;
+    }
+    query += ' RETURNING *;';
+
     const res = await pgPool.query(query, values);
     return res.rows[0] || null;
   },
 
-  async getEmailById(id: string): Promise<EmailRecord | null> {
+  async getEmailById(id: string, userId?: string): Promise<EmailRecord | null> {
+    if (userId) {
+      const res = await pgPool.query('SELECT * FROM emails WHERE id = $1 AND user_id = $2 LIMIT 1', [id, userId]);
+      return res.rows[0] || null;
+    }
     const res = await pgPool.query('SELECT * FROM emails WHERE id = $1 LIMIT 1', [id]);
     return res.rows[0] || null;
   },
 
-  async getScheduledEmails(): Promise<EmailRecord[]> {
+  async deleteEmail(id: string, userId: string): Promise<boolean> {
+    const res = await pgPool.query('DELETE FROM emails WHERE id = $1 AND user_id = $2', [id, userId]);
+    return (res.rowCount ?? 0) > 0;
+  },
+
+  async getScheduledEmails(userId: string): Promise<EmailRecord[]> {
     const res = await pgPool.query(
-      "SELECT * FROM emails WHERE status IN ('scheduled', 'processing') ORDER BY scheduled_at ASC"
+      "SELECT * FROM emails WHERE status IN ('scheduled', 'processing') AND user_id = $1 ORDER BY scheduled_at ASC",
+      [userId]
     );
     return res.rows;
   },
 
-  async getEmailHistory(limit: number = 100, status?: string): Promise<EmailRecord[]> {
-    let query = "SELECT * FROM emails WHERE status != 'scheduled'";
-    const params: any[] = [];
+  async getEmailHistory(userId: string, limit: number = 100, status?: string): Promise<EmailRecord[]> {
+    let query = "SELECT * FROM emails WHERE status != 'scheduled' AND user_id = $1";
+    const params: any[] = [userId];
     if (status && status !== 'all') {
       params.push(status);
       query += ` AND status = $${params.length}`;
@@ -340,19 +418,19 @@ export const db = {
     return res.rows;
   },
 
-  async searchEmails(searchTerm: string): Promise<EmailRecord[]> {
+  async searchEmails(userId: string, searchTerm: string): Promise<EmailRecord[]> {
     const term = `%${searchTerm.toLowerCase()}%`;
     const query = `
       SELECT * FROM emails
-      WHERE LOWER(recipient) LIKE $1 OR LOWER(subject) LIKE $1 OR LOWER(body) LIKE $1
+      WHERE user_id = $1 AND (LOWER(recipient) LIKE $2 OR LOWER(subject) LIKE $2 OR LOWER(body) LIKE $2)
       ORDER BY created_at DESC
       LIMIT 50;
     `;
-    const res = await pgPool.query(query, [term]);
+    const res = await pgPool.query(query, [userId, term]);
     return res.rows;
   },
 
-  async getStats(): Promise<{
+  async getStats(userId: string): Promise<{
     total: number;
     scheduled: number;
     processing: number;
@@ -368,39 +446,42 @@ export const db = {
         COUNT(*) FILTER (WHERE status = 'sent') as sent,
         COUNT(*) FILTER (WHERE status = 'failed') as failed,
         COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled
-      FROM emails;
+      FROM emails
+      WHERE user_id = $1;
     `;
-    const res = await pgPool.query(query);
+    const res = await pgPool.query(query, [userId]);
     const row = res.rows[0];
     return {
-      total: parseInt(row.total, 10) || 0,
-      scheduled: parseInt(row.scheduled, 10) || 0,
-      processing: parseInt(row.processing, 10) || 0,
-      sent: parseInt(row.sent, 10) || 0,
-      failed: parseInt(row.failed, 10) || 0,
-      cancelled: parseInt(row.cancelled, 10) || 0,
+      total: parseInt(row?.total, 10) || 0,
+      scheduled: parseInt(row?.scheduled, 10) || 0,
+      processing: parseInt(row?.processing, 10) || 0,
+      sent: parseInt(row?.sent, 10) || 0,
+      failed: parseInt(row?.failed, 10) || 0,
+      cancelled: parseInt(row?.cancelled, 10) || 0,
     };
   },
 
-  async getSlackIntegration(): Promise<SlackIntegrationRecord | null> {
+  async getSlackIntegration(userId: string): Promise<SlackIntegrationRecord | null> {
     const res = await pgPool.query(
-      'SELECT * FROM slack_integrations WHERE is_active = TRUE ORDER BY updated_at DESC LIMIT 1'
+      'SELECT * FROM slack_integrations WHERE user_id = $1 AND is_active = TRUE ORDER BY updated_at DESC LIMIT 1',
+      [userId]
     );
     return res.rows[0] || null;
   },
 
-  async saveSlackIntegration(record: SlackIntegrationRecord): Promise<SlackIntegrationRecord> {
-    // Upsert or insert new active integration
-    await pgPool.query('UPDATE slack_integrations SET is_active = FALSE');
+  async saveSlackIntegration(record: SlackIntegrationRecord, userId: string): Promise<SlackIntegrationRecord> {
+    // Deactivate previous active integration for this user
+    await pgPool.query('UPDATE slack_integrations SET is_active = FALSE WHERE user_id = $1', [userId]);
     const query = `
       INSERT INTO slack_integrations (
-        id, team_id, team_name, access_token, bot_user_id, channel_id, channel_name, incoming_webhook_url, is_active, created_at, updated_at
+        id, user_id, team_id, team_name, access_token, bot_user_id, channel_id, channel_name, incoming_webhook_url, is_active, created_at, updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING *;
     `;
     const values = [
       record.id,
+      userId,
       record.team_id || null,
       record.team_name || null,
       record.access_token || null,
@@ -416,8 +497,8 @@ export const db = {
     return res.rows[0];
   },
 
-  async deleteSlackIntegration(): Promise<boolean> {
-    const res = await pgPool.query('DELETE FROM slack_integrations');
+  async deleteSlackIntegration(userId: string): Promise<boolean> {
+    const res = await pgPool.query('DELETE FROM slack_integrations WHERE user_id = $1', [userId]);
     return (res.rowCount ?? 0) > 0;
   },
 
@@ -440,16 +521,36 @@ export const db = {
   async upsertGoogleUser(userData: {
     googleId?: string | null;
     email: string;
+    emailVerified?: boolean;
     name: string;
     avatarUrl?: string | null;
   }): Promise<UserRecord> {
-    const existing = userData.email
-      ? await this.findUserByEmail(userData.email)
-      : (userData.googleId ? await this.findUserByGoogleId(userData.googleId) : null);
-
     const now = new Date().toISOString();
+    const normalizedEmail = userData.email.toLowerCase().trim();
 
-    if (existing) {
+    // 1. First, search by stable Google ID if available
+    let existingUser: UserRecord | null = null;
+    if (userData.googleId) {
+      existingUser = await this.findUserByGoogleId(userData.googleId);
+    }
+
+    // 2. If not found by googleId, check by email with strict safe account linking rules
+    if (!existingUser) {
+      const userByEmail = await this.findUserByEmail(normalizedEmail);
+      if (userByEmail) {
+        // Safe Account Linking:
+        // Only link if email is verified by Google OAuth AND existing account doesn't already belong to a different Google ID
+        if (userData.emailVerified && (!userByEmail.google_id || userByEmail.google_id === userData.googleId)) {
+          existingUser = userByEmail;
+        } else if (userByEmail.google_id && userData.googleId && userByEmail.google_id !== userData.googleId) {
+          throw new Error('Account linking rejected: this email is already bound to a different Google account.');
+        } else if (!userData.emailVerified) {
+          throw new Error('Account linking rejected: Google OAuth email is not verified.');
+        }
+      }
+    }
+
+    if (existingUser) {
       const updateQuery = `
         UPDATE users
         SET name = $1,
@@ -464,7 +565,7 @@ export const db = {
         userData.avatarUrl || null,
         userData.googleId || null,
         now,
-        existing.id,
+        existingUser.id,
       ]);
       return res.rows[0];
     } else {
@@ -477,7 +578,7 @@ export const db = {
       const res = await pgPool.query(insertQuery, [
         userId,
         userData.googleId || null,
-        userData.email.toLowerCase(),
+        normalizedEmail,
         userData.name,
         userData.avatarUrl || null,
         now,

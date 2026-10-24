@@ -6,6 +6,7 @@ import { db, UserRecord } from '../config/db';
 export interface GoogleUserProfile {
   googleId: string;
   email: string;
+  emailVerified?: boolean;
   name: string;
   avatarUrl?: string;
 }
@@ -156,9 +157,12 @@ export const authService = {
       throw new Error(userData.error?.message || 'Failed to retrieve Google user profile');
     }
 
+    const emailVerified = Boolean(userData.verified_email ?? userData.email_verified ?? true);
+
     return {
       googleId: userData.id || userData.sub,
       email: userData.email,
+      emailVerified,
       name: userData.name || userData.email.split('@')[0],
       avatarUrl: userData.picture || undefined,
     };
@@ -171,6 +175,7 @@ export const authService = {
     const user = await db.upsertGoogleUser({
       googleId: profile.googleId,
       email: profile.email,
+      emailVerified: profile.emailVerified ?? true,
       name: profile.name,
       avatarUrl: profile.avatarUrl,
     });
@@ -219,6 +224,7 @@ export const authService = {
     const user = await db.upsertGoogleUser({
       googleId: targetGoogleId,
       email: targetEmail,
+      emailVerified: true,
       name: targetName,
       avatarUrl: targetAvatar,
     });

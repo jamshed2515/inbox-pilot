@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { db, EmailSenderRecord } from '../config/db';
 import { mailerService } from '../services/mailer.service';
+import { AuthenticatedRequest } from '../middlewares/auth.middleware';
 
 const createSenderSchema = z.object({
   name: z.string().min(1, 'Sender display name is required'),
@@ -18,13 +19,20 @@ const provisionSenderSchema = z.object({
   is_default: z.boolean().optional().default(false),
 });
 
-export const listSenders = async (_req: Request, res: Response): Promise<void> => {
+// Helper to prevent exposing sensitive SMTP passwords in API responses
+const sanitizeSender = (sender: EmailSenderRecord): EmailSenderRecord => ({
+  ...sender,
+  smtp_pass: sender.smtp_pass ? '••••••••' : null,
+});
+
+export const listSenders = async (req: Request, res: Response): Promise<void> => {
   try {
-    const senders = await db.getSenders();
+    const userId = (req as AuthenticatedRequest).user!.id;
+    const senders = await db.getSenders(userId);
     res.json({
       success: true,
       count: senders.length,
-      data: senders,
+      data: senders.map(sanitizeSender),
     });
   } catch (error: any) {
     res.status(500).json({
@@ -36,6 +44,7 @@ export const listSenders = async (_req: Request, res: Response): Promise<void> =
 
 export const createSender = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const validated = createSenderSchema.parse(req.body);
 
     const now = new Date().toISOString();
@@ -43,6 +52,7 @@ export const createSender = async (req: Request, res: Response): Promise<void> =
 
     const newSender: EmailSenderRecord = {
       id: senderId,
+      user_id: userId,
       name: validated.name,
       email: validated.email,
       smtp_host: validated.smtp_host || null,
@@ -58,7 +68,7 @@ export const createSender = async (req: Request, res: Response): Promise<void> =
     res.status(201).json({
       success: true,
       message: 'Sender created successfully',
-      data: saved,
+      data: sanitizeSender(saved),
     });
   } catch (error: any) {
     if (error instanceof z.ZodError) {
@@ -77,6 +87,7 @@ export const createSender = async (req: Request, res: Response): Promise<void> =
 
 export const provisionTestSender = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const validated = provisionSenderSchema.parse(req.body || {});
     const credentials = await mailerService.provisionTestAccount(validated.name);
 
@@ -85,6 +96,7 @@ export const provisionTestSender = async (req: Request, res: Response): Promise<
 
     const newSender: EmailSenderRecord = {
       id: senderId,
+      user_id: userId,
       name: credentials.name,
       email: credentials.email,
       smtp_host: credentials.smtp_host,
@@ -100,7 +112,7 @@ export const provisionTestSender = async (req: Request, res: Response): Promise<
     res.status(201).json({
       success: true,
       message: 'Dynamic test sender provisioned successfully via Ethereal',
-      data: saved,
+      data: sanitizeSender(saved),
     });
   } catch (error: any) {
     res.status(500).json({
@@ -112,8 +124,9 @@ export const provisionTestSender = async (req: Request, res: Response): Promise<
 
 export const getSender = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const sender = await db.getSenderById(id);
+    const sender = await db.getSenderById(id, userId);
     if (!sender) {
       res.status(404).json({
         success: false,
@@ -123,7 +136,7 @@ export const getSender = async (req: Request, res: Response): Promise<void> => {
     }
     res.json({
       success: true,
-      data: sender,
+      data: sanitizeSender(sender),
     });
   } catch (error: any) {
     res.status(500).json({
@@ -135,8 +148,9 @@ export const getSender = async (req: Request, res: Response): Promise<void> => {
 
 export const deleteSender = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const deleted = await db.deleteSender(id);
+    const deleted = await db.deleteSender(id, userId);
     if (!deleted) {
       res.status(404).json({
         success: false,

@@ -3,6 +3,7 @@ import { bullMqConnectionOptions } from '../config/redis';
 
 export interface EmailJobData {
   id: string; // Database email record ID
+  userId?: string | null; // Authenticated owner user ID
   senderId?: string | null;
   recipient: string;
   subject: string;

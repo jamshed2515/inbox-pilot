@@ -12,13 +12,15 @@ const startServer = async () => {
   // 1. Initialize PostgreSQL Relational Database Schema
   await initDb();
 
-  // Seed default dynamic senders if none exist
-  const existingSenders = await db.getSenders();
+  // Seed default dynamic senders for default demo user if none exist
+  const demoUser = await authService.createOrGetMockGoogleUser();
+  const existingSenders = await db.getSenders(demoUser.user.id);
   if (existingSenders.length === 0) {
-    console.log('🌱 Initializing dynamic default email senders...');
+    console.log('🌱 Initializing dynamic default email senders for demo user...');
     const now = new Date().toISOString();
     await db.createSender({
       id: `sender_primary_${Date.now()}`,
+      user_id: demoUser.user.id,
       name: 'Default Outreach Team',
       email: 'outreach@reachinbox-scheduler.io',
       is_default: true,
@@ -27,13 +29,14 @@ const startServer = async () => {
     });
     await db.createSender({
       id: `sender_support_${Date.now()}`,
+      user_id: demoUser.user.id,
       name: 'Customer Support Desk',
       email: 'support@reachinbox-scheduler.io',
       is_default: false,
       created_at: now,
       updated_at: now,
     });
-    console.log('✅ Dynamic default email senders provisioned.');
+    console.log('✅ Dynamic default email senders provisioned for demo user.');
   }
 
   // 2. Initialize Elasticsearch Index & Connectivity

@@ -246,6 +246,15 @@ export default function App() {
     const authError = params.get('auth_error');
 
     if (urlToken) {
+      // Synchronously clear all previous user state to prevent any data leakage
+      setStats(null);
+      setScheduledEmails([]);
+      setEmailHistory([]);
+      setSenders([]);
+      setSlackStatus(null);
+      setPreviewEmail(null);
+      setSelectedSenderId('');
+      setBatchSenderId('');
       localStorage.setItem('reachinbox_token', urlToken);
       setAuthToken(urlToken);
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -302,6 +311,7 @@ export default function App() {
     } catch {
       // ignore
     }
+    // Synchronously purge all user-specific state and cached queries
     localStorage.removeItem('reachinbox_token');
     setAuthToken('');
     setCurrentUser(null);
@@ -311,19 +321,40 @@ export default function App() {
     setSenders([]);
     setSlackStatus(null);
     setPreviewEmail(null);
+    setSelectedSenderId('');
+    setBatchSenderId('');
     showNotification('Logged out successfully.');
   };
 
-  const handleDemoGoogleLogin = async () => {
+  const handleDemoGoogleLogin = async (accountType: 'userA' | 'userB' = 'userA') => {
     try {
+      // Synchronously purge previous user state before loading new account
+      setStats(null);
+      setScheduledEmails([]);
+      setEmailHistory([]);
+      setSenders([]);
+      setSlackStatus(null);
+      setPreviewEmail(null);
+      setSelectedSenderId('');
+      setBatchSenderId('');
+
+      const targetAccount =
+        accountType === 'userB'
+          ? {
+              email: 'sarah.growth@reachinbox.ai',
+              name: 'Sarah Growth',
+              avatarUrl: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
+            }
+          : {
+              email: 'alex.founder@reachinbox.ai',
+              name: 'Alex Founder',
+              avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+            };
+
       const res = await fetch(getApiUrl('/api/auth/mock-login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: 'alex.founder@reachinbox.ai',
-          name: 'Alex Founder',
-          avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-        }),
+        body: JSON.stringify(targetAccount),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || 'Login failed');
@@ -893,15 +924,31 @@ export default function App() {
             </div>
 
             <div className="pt-2 space-y-3.5">
-              {/* Prominent Primary: One-Click Demo Google Login */}
+              {/* Account A Demo Login */}
               <button
-                onClick={handleDemoGoogleLogin}
-                className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-teal-400 via-teal-500 to-indigo-600 hover:from-teal-300 hover:to-indigo-500 text-slate-950 font-black text-sm shadow-xl shadow-teal-500/25 flex items-center justify-center gap-2.5 transition transform hover:scale-[1.01] active:scale-[0.99] cursor-pointer"
+                onClick={() => handleDemoGoogleLogin('userA')}
+                className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-teal-400 via-teal-500 to-indigo-600 hover:from-teal-300 hover:to-indigo-500 text-slate-950 font-black text-sm shadow-xl shadow-teal-500/25 flex items-center justify-between transition transform hover:scale-[1.01] active:scale-[0.99] cursor-pointer"
               >
-                <Sparkles className="w-5 h-5 text-slate-950 fill-slate-950" />
-                <span>One-Click Demo Google Login</span>
-                <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-md bg-black/20 text-slate-950 font-bold ml-1">
-                  Instant Access
+                <div className="flex items-center gap-2.5">
+                  <Sparkles className="w-5 h-5 text-slate-950 fill-slate-950" />
+                  <span>Demo User A (Alex Founder)</span>
+                </div>
+                <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-md bg-black/20 text-slate-950 font-bold">
+                  Account A
+                </span>
+              </button>
+
+              {/* Account B Demo Login for Multi-User Isolation Testing */}
+              <button
+                onClick={() => handleDemoGoogleLogin('userB')}
+                className="w-full py-3 px-5 rounded-2xl bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-teal-500/50 text-white font-bold text-sm shadow-lg flex items-center justify-between transition transform hover:scale-[1.01] active:scale-[0.99] cursor-pointer"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Users className="w-4 h-4 text-teal-400" />
+                  <span>Demo User B (Sarah Growth)</span>
+                </div>
+                <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-300 border border-teal-500/20 font-bold">
+                  Account B (Isolated)
                 </span>
               </button>
 

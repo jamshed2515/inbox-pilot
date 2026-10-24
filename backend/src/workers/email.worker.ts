@@ -12,25 +12,45 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
   const worker = new Worker<EmailJobData>(
     EMAIL_QUEUE_NAME,
     async (job: Job<EmailJobData>) => {
-      const { id, senderId, recipient, subject, body } = job.data;
+      const { id, userId, senderId, recipient, subject, body } = job.data;
 
-      // Resolve assigned sender
+      // 1. Fetch persisted database email record to verify existence and ownership
+      const record = await db.getEmailById(id);
+      if (!record) {
+        console.warn(`⚠️ [Worker] Job ${job.id} aborted: Database record for email ${id} not found.`);
+        return { aborted: true, reason: 'Record not found' };
+      }
+
+      // Security Check: Enforce verified ownership. Old jobs or records without established ownership must be quarantined.
+      if (!record.user_id && !userId) {
+        console.warn(
+          `⚠️ [Worker] Job ${job.id} quarantined: Email record ${id} has no established owner (user_id IS NULL). Aborting to prevent cross-account exposure.`
+        );
+        return { aborted: true, reason: 'Ownerless legacy record quarantined' };
+      }
+
+      // Security Check: If both job and record have ownership, ensure they match
+      if (job.data.userId && record.user_id && job.data.userId !== record.user_id) {
+        console.error(
+          `🚨 [Worker] Security abort: Job userId (${job.data.userId}) does not match record owner (${record.user_id}) for email ${id}!`
+        );
+        return { aborted: true, reason: 'Ownership mismatch' };
+      }
+
+      const effectiveUserId = record.user_id || userId!;
+
+      // 2. Resolve assigned sender scoped to the verified user
       let sender = null;
-      if (senderId) {
-        sender = await db.getSenderById(senderId);
+      const targetSenderId = senderId || record.sender_id;
+      if (targetSenderId) {
+        sender = await db.getSenderById(targetSenderId, effectiveUserId);
       }
-      if (!sender) {
-        const record = await db.getEmailById(id);
-        if (record?.sender_id) {
-          sender = await db.getSenderById(record.sender_id);
-        }
-      }
-      if (!sender) {
-        sender = await db.getDefaultSender();
+      if (!sender && effectiveUserId) {
+        sender = await db.getDefaultSender(effectiveUserId);
       }
 
-      const senderDisplay = sender ? `"${sender.name}" <${sender.email}>` : 'Default Sender';
-      console.log(`\n⏳ [Worker] Job ready: ID ${job.id} | Email: ${id} | Sender: ${senderDisplay} | To: ${recipient}`);
+      const senderDisplay = sender ? `"${sender.name}" <${sender.email}>` : 'Default System Sender';
+      console.log(`\n⏳ [Worker] Job ready: ID ${job.id} | Email: ${id} | Owner: ${effectiveUserId || 'legacy'} | Sender: ${senderDisplay} | To: ${recipient}`);
 
       // Rate limit check in Redis: rate_limit:senderId:currentHour
       if (sender) {
@@ -46,11 +66,15 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
 
           // The important rule: Never drop the email when the limit is reached.
           // It must remain scheduled and eventually be sent.
-          await db.updateEmail(id, {
-            status: 'scheduled',
-            scheduled_at: nextHourIso,
-            error_message: `Hourly rate limit of ${rateCheck.maxLimit}/hr exceeded for sender. Rescheduled for next hour window.`,
-          });
+          await db.updateEmail(
+            id,
+            {
+              status: 'scheduled',
+              scheduled_at: nextHourIso,
+              error_message: `Hourly rate limit of ${rateCheck.maxLimit}/hr exceeded for sender. Rescheduled for next hour window.`,
+            },
+            effectiveUserId
+          );
 
           await elasticsearchService.updateEmailStatus(id, {
             status: 'scheduled',
@@ -58,8 +82,9 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
             error_message: `Hourly rate limit of ${rateCheck.maxLimit}/hr exceeded for sender. Rescheduled for next hour window.`,
           });
 
-          // Send real Slack notification
+          // Send real Slack notification scoped to the user's Slack integration
           await slackService.sendRateLimitAlert({
+            userId: effectiveUserId || null,
             senderId: sender.id,
             senderName: sender.name,
             senderEmail: sender.email,
@@ -70,10 +95,11 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
             recipient,
           });
 
-          // Re-schedule in queue for the calculated next-hour window
+          // Re-schedule in queue preserving userId and ownership
           await queueService.addEmailJob(
             {
               ...job.data,
+              userId: effectiveUserId,
               scheduledAt: nextHourIso,
             },
             delayMs
@@ -90,8 +116,8 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
         await rateLimiterService.enforceMinDelay(sender.id);
       }
 
-      // 1. Update state to 'processing' in PostgreSQL and Elasticsearch
-      await db.updateEmail(id, { status: 'processing' });
+      // 3. Update state to 'processing' in PostgreSQL and Elasticsearch
+      await db.updateEmail(id, { status: 'processing' }, effectiveUserId);
       await elasticsearchService.updateEmailStatus(id, { status: 'processing' });
 
       try {
@@ -108,13 +134,17 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
 
         const sentAt = new Date().toISOString();
 
-        // 2. Update state to 'sent' in PostgreSQL and Elasticsearch
-        await db.updateEmail(id, {
-          status: 'sent',
-          sent_at: sentAt,
-          preview_url: result.previewUrl,
-          error_message: null,
-        });
+        // 4. Update state to 'sent' in PostgreSQL and Elasticsearch
+        await db.updateEmail(
+          id,
+          {
+            status: 'sent',
+            sent_at: sentAt,
+            preview_url: result.previewUrl,
+            error_message: null,
+          },
+          effectiveUserId
+        );
         await elasticsearchService.updateEmailStatus(id, {
           status: 'sent',
           sent_at: sentAt,
@@ -135,20 +165,28 @@ export const startEmailWorker = (): Worker<EmailJobData> => {
         // If this is the final attempt or no attempts left, update state to 'failed'
         if (attempt >= maxAttempts) {
           const errorMessage = error.message || 'Unknown delivery failure';
-          await db.updateEmail(id, {
-            status: 'failed',
-            error_message: errorMessage,
-          }).catch(() => {});
+          await db.updateEmail(
+            id,
+            {
+              status: 'failed',
+              error_message: errorMessage,
+            },
+            effectiveUserId
+          ).catch(() => {});
           await elasticsearchService.updateEmailStatus(id, {
             status: 'failed',
             error_message: errorMessage,
           }).catch(() => {});
         } else {
           // While BullMQ retries with backoff, record attempt info in error_message
-          await db.updateEmail(id, {
-            status: 'scheduled',
-            error_message: `Attempt ${attempt}/${maxAttempts} failed: ${error.message}. Retrying...`,
-          }).catch(() => {});
+          await db.updateEmail(
+            id,
+            {
+              status: 'scheduled',
+              error_message: `Attempt ${attempt}/${maxAttempts} failed: ${error.message}. Retrying...`,
+            },
+            effectiveUserId
+          ).catch(() => {});
         }
 
         throw error; // Rethrow to let BullMQ handle retry and backoff

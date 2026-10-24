@@ -50,6 +50,7 @@ export const initElasticsearch = async (): Promise<boolean> => {
         mappings: {
           properties: {
             id: { type: 'keyword' },
+            user_id: { type: 'keyword' },
             job_id: { type: 'keyword' },
             sender_id: { type: 'keyword' },
             recipient: {
@@ -72,11 +73,12 @@ export const initElasticsearch = async (): Promise<boolean> => {
       });
       console.log(`📦 Elasticsearch index '${INDEX_NAME}' created with full-text search mappings.`);
     } else {
-      // Ensure sender_id mapping is added to existing index
+      // Ensure user_id & sender_id mappings are added to existing index
       try {
         await esClient.indices.putMapping({
           index: INDEX_NAME,
           properties: {
+            user_id: { type: 'keyword' },
             sender_id: { type: 'keyword' },
           },
         });
@@ -112,6 +114,7 @@ export const elasticsearchService = {
         id: email.id,
         document: {
           id: email.id,
+          user_id: email.user_id || null,
           job_id: email.job_id,
           sender_id: email.sender_id || null,
           recipient: email.recipient,
@@ -166,7 +169,7 @@ export const elasticsearchService = {
   /**
    * Retrieve a specific email document from Elasticsearch by ID.
    */
-  async getEmailDocument(id: string): Promise<EmailRecord | null> {
+  async getEmailDocument(id: string, userId?: string): Promise<EmailRecord | null> {
     if (!isEsConnected || !esClient) {
       return null;
     }
@@ -176,6 +179,9 @@ export const elasticsearchService = {
         id,
       });
       if (res.found && res._source) {
+        if (userId && res._source.user_id && res._source.user_id !== userId) {
+          return null; // Tenant isolation check
+        }
         return res._source;
       }
       return null;
@@ -187,22 +193,36 @@ export const elasticsearchService = {
   },
 
   /**
-   * Search emails using Elasticsearch full-text query across recipient, subject, and body.
+   * Search emails using Elasticsearch full-text query scoped strictly to the authenticated user.
    * Falls back to PostgreSQL search if Elasticsearch is temporarily unavailable.
    */
-  async searchEmails(searchTerm: string): Promise<{ data: EmailRecord[]; source: 'elasticsearch' | 'postgresql' }> {
+  async searchEmails(
+    userId: string,
+    searchTerm: string
+  ): Promise<{ data: EmailRecord[]; source: 'elasticsearch' | 'postgresql' }> {
     if (!isEsConnected || !esClient) {
-      const pgResults = await db.searchEmails(searchTerm);
+      const pgResults = await db.searchEmails(userId, searchTerm);
       return { data: pgResults, source: 'postgresql' };
     }
     try {
       const response = await esClient.search<EmailRecord>({
         index: INDEX_NAME,
         query: {
-          multi_match: {
-            query: searchTerm,
-            fields: ['recipient^3', 'recipient.keyword', 'subject^2', 'body'],
-            fuzziness: 'AUTO',
+          bool: {
+            must: [
+              {
+                multi_match: {
+                  query: searchTerm,
+                  fields: ['recipient^3', 'recipient.keyword', 'subject^2', 'body'],
+                  fuzziness: 'AUTO',
+                },
+              },
+            ],
+            filter: [
+              {
+                term: { user_id: userId },
+              },
+            ],
           },
         },
         sort: [{ created_at: { order: 'desc' } }],
@@ -213,7 +233,7 @@ export const elasticsearchService = {
       return { data: hits, source: 'elasticsearch' };
     } catch (error: any) {
       console.warn(`⚠️ [Elasticsearch] Search failed (${error.message}). Falling back to PostgreSQL search.`);
-      const pgResults = await db.searchEmails(searchTerm);
+      const pgResults = await db.searchEmails(userId, searchTerm);
       return { data: pgResults, source: 'postgresql' };
     }
   },

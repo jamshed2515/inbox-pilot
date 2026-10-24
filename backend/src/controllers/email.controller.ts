@@ -4,7 +4,7 @@ import { db, EmailRecord } from '../config/db';
 import { queueService } from '../services/queue.service';
 import { mailerService } from '../services/mailer.service';
 import { elasticsearchService } from '../services/elasticsearch.service';
-
+import { AuthenticatedRequest } from '../middlewares/auth.middleware';
 
 const singleEmailSchema = z.object({
   recipient: z.string().email('Please provide a valid recipient email address'),
@@ -32,21 +32,22 @@ const batchEmailSchema = z.object({
 
 export const scheduleEmail = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const validated = singleEmailSchema.parse(req.body);
 
-    // Resolve sender
+    // Resolve sender scoped to authenticated user
     let resolvedSenderId = validated.senderId || null;
     if (resolvedSenderId) {
-      const sender = await db.getSenderById(resolvedSenderId);
+      const sender = await db.getSenderById(resolvedSenderId, userId);
       if (!sender) {
         res.status(400).json({
           success: false,
-          error: { message: `Sender with ID '${resolvedSenderId}' does not exist` },
+          error: { message: `Sender with ID '${resolvedSenderId}' does not exist or does not belong to your account` },
         });
         return;
       }
     } else {
-      const defaultSender = await db.getDefaultSender();
+      const defaultSender = await db.getDefaultSender(userId);
       resolvedSenderId = defaultSender?.id || null;
     }
 
@@ -77,6 +78,7 @@ export const scheduleEmail = async (req: Request, res: Response): Promise<void> 
 
     const newRecord: EmailRecord = {
       id: emailId,
+      user_id: userId,
       job_id: emailId,
       sender_id: resolvedSenderId,
       recipient: validated.recipient,
@@ -97,10 +99,11 @@ export const scheduleEmail = async (req: Request, res: Response): Promise<void> 
     // 2. Index in Elasticsearch
     await elasticsearchService.indexEmail(newRecord);
 
-    // 3. Add to BullMQ Queue
+    // 3. Add to BullMQ Queue with userId
     const job = await queueService.addEmailJob(
       {
         id: emailId,
+        userId,
         senderId: resolvedSenderId,
         recipient: validated.recipient,
         subject: validated.subject,
@@ -139,11 +142,12 @@ export const scheduleEmail = async (req: Request, res: Response): Promise<void> 
 
 export const batchScheduleEmails = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const validated = batchEmailSchema.parse(req.body);
     const results: EmailRecord[] = [];
     const now = Date.now();
 
-    const defaultSender = await db.getDefaultSender();
+    const defaultSender = await db.getDefaultSender(userId);
 
     for (let i = 0; i < validated.emails.length; i++) {
       const item = validated.emails[i];
@@ -166,6 +170,7 @@ export const batchScheduleEmails = async (req: Request, res: Response): Promise<
 
       const record: EmailRecord = {
         id: emailId,
+        user_id: userId,
         job_id: emailId,
         sender_id: itemSenderId,
         recipient: item.recipient,
@@ -185,6 +190,7 @@ export const batchScheduleEmails = async (req: Request, res: Response): Promise<
       await queueService.addEmailJob(
         {
           id: emailId,
+          userId,
           senderId: itemSenderId,
           recipient: item.recipient,
           subject: item.subject,
@@ -218,9 +224,10 @@ export const batchScheduleEmails = async (req: Request, res: Response): Promise<
   }
 };
 
-export const getScheduledEmails = async (_req: Request, res: Response): Promise<void> => {
+export const getScheduledEmails = async (req: Request, res: Response): Promise<void> => {
   try {
-    const scheduled = await db.getScheduledEmails();
+    const userId = (req as AuthenticatedRequest).user!.id;
+    const scheduled = await db.getScheduledEmails(userId);
     res.json({
       success: true,
       count: scheduled.length,
@@ -236,9 +243,10 @@ export const getScheduledEmails = async (_req: Request, res: Response): Promise<
 
 export const getEmailHistory = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const status = req.query.status as string | undefined;
     const limit = Number(req.query.limit) || 100;
-    const history = await db.getEmailHistory(limit, status);
+    const history = await db.getEmailHistory(userId, limit, status);
     res.json({
       success: true,
       count: history.length,
@@ -252,10 +260,37 @@ export const getEmailHistory = async (req: Request, res: Response): Promise<void
   }
 };
 
+export const getEmailById = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = (req as AuthenticatedRequest).user!.id;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const email = await db.getEmailById(id, userId);
+
+    if (!email) {
+      res.status(404).json({
+        success: false,
+        error: { message: `Email with ID ${id} not found` },
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: email,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || 'Failed to retrieve email' },
+    });
+  }
+};
+
 export const cancelEmail = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const email = await db.getEmailById(id);
+    const email = await db.getEmailById(id, userId);
 
     if (!email) {
       res.status(404).json({
@@ -276,11 +311,15 @@ export const cancelEmail = async (req: Request, res: Response): Promise<void> =>
     // Cancel in BullMQ
     await queueService.removeEmailJob(email.job_id || id);
 
-    // Update DB
-    const updated = await db.updateEmail(id, {
-      status: 'cancelled',
-      error_message: 'Cancelled by user',
-    });
+    // Update DB with userId ownership check
+    const updated = await db.updateEmail(
+      id,
+      {
+        status: 'cancelled',
+        error_message: 'Cancelled by user',
+      },
+      userId
+    );
 
     // Update Elasticsearch
     await elasticsearchService.updateEmailStatus(id, {
@@ -303,8 +342,9 @@ export const cancelEmail = async (req: Request, res: Response): Promise<void> =>
 
 export const retryEmail = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const email = await db.getEmailById(id);
+    const email = await db.getEmailById(id, userId);
 
     if (!email) {
       res.status(404).json({
@@ -316,12 +356,16 @@ export const retryEmail = async (req: Request, res: Response): Promise<void> => 
 
     const scheduledAt = new Date().toISOString();
 
-    // Re-schedule immediately
-    await db.updateEmail(id, {
-      status: 'scheduled',
-      error_message: null,
-      scheduled_at: scheduledAt,
-    });
+    // Re-schedule immediately with userId ownership check
+    await db.updateEmail(
+      id,
+      {
+        status: 'scheduled',
+        error_message: null,
+        scheduled_at: scheduledAt,
+      },
+      userId
+    );
 
     // Update Elasticsearch
     await elasticsearchService.updateEmailStatus(id, {
@@ -330,14 +374,15 @@ export const retryEmail = async (req: Request, res: Response): Promise<void> => 
       scheduled_at: scheduledAt,
     });
 
-
     await queueService.addEmailJob(
       {
         id: email.id,
+        userId,
+        senderId: email.sender_id,
         recipient: email.recipient,
         subject: email.subject,
         body: email.body,
-        scheduledAt: new Date().toISOString(),
+        scheduledAt: scheduledAt,
       },
       0
     );
@@ -354,10 +399,39 @@ export const retryEmail = async (req: Request, res: Response): Promise<void> => 
   }
 };
 
-export const getStats = async (_req: Request, res: Response): Promise<void> => {
+export const deleteEmail = async (req: Request, res: Response): Promise<void> => {
   try {
-    const [dbStats, queueStats] = await Promise.all([
-      db.getStats(),
+    const userId = (req as AuthenticatedRequest).user!.id;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const deleted = await db.deleteEmail(id, userId);
+
+    if (!deleted) {
+      res.status(404).json({
+        success: false,
+        error: { message: `Email with ID ${id} not found` },
+      });
+      return;
+    }
+
+    await queueService.removeEmailJob(id).catch(() => {});
+
+    res.json({
+      success: true,
+      message: 'Email record deleted successfully',
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: { message: error.message || 'Failed to delete email' },
+    });
+  }
+};
+
+export const getStats = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = (req as AuthenticatedRequest).user!.id;
+    const [dbStats, queueStats, userSenders] = await Promise.all([
+      db.getStats(userId),
       queueService.getQueueStats().catch(() => ({
         waiting: 0,
         active: 0,
@@ -366,6 +440,7 @@ export const getStats = async (_req: Request, res: Response): Promise<void> => {
         failed: 0,
         total: 0,
       })),
+      db.getSenders(userId),
     ]);
 
     res.json({
@@ -375,7 +450,7 @@ export const getStats = async (_req: Request, res: Response): Promise<void> => {
         queue: queueStats,
         mailer: mailerService.getAccountInfo(),
         storageType: 'PostgreSQL 16',
-        sendersCount: (await db.getSenders()).length,
+        sendersCount: userSenders.length,
         elasticsearch: {
           available: elasticsearchService.isAvailable(),
           index: process.env.ELASTICSEARCH_INDEX || 'emails',
@@ -392,14 +467,15 @@ export const getStats = async (_req: Request, res: Response): Promise<void> => {
 
 export const searchEmails = async (req: Request, res: Response): Promise<void> => {
   try {
+    const userId = (req as AuthenticatedRequest).user!.id;
     const q = String(req.query.q || '').trim();
     if (!q) {
       res.json({ success: true, count: 0, source: 'elasticsearch', data: [] });
       return;
     }
 
-    // Query Elasticsearch instead of PostgreSQL
-    const { data: results, source } = await elasticsearchService.searchEmails(q);
+    // Query Elasticsearch scoped strictly to user
+    const { data: results, source } = await elasticsearchService.searchEmails(userId, q);
     res.json({
       success: true,
       count: results.length,

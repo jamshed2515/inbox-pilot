@@ -2,6 +2,7 @@ import { env } from '../config/env';
 import { db, SlackIntegrationRecord } from '../config/db';
 
 export interface RateLimitAlertData {
+  userId?: string | null;
   senderId: string;
   senderName: string;
   senderEmail: string;
@@ -16,17 +17,21 @@ export const slackService = {
   /**
    * Generates the Slack OAuth v2 authorization redirect URL
    */
-  getOAuthAuthorizeUrl(): string {
+  getOAuthAuthorizeUrl(state?: string): string {
     const clientId = env.SLACK_CLIENT_ID || 'dummy_client_id';
     const redirectUri = encodeURIComponent(env.SLACK_REDIRECT_URI);
     const scope = encodeURIComponent('chat:write,incoming-webhook');
-    return `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${scope}&redirect_uri=${redirectUri}`;
+    let url = `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${scope}&redirect_uri=${redirectUri}`;
+    if (state) {
+      url += `&state=${encodeURIComponent(state)}`;
+    }
+    return url;
   },
 
   /**
    * Exchanges authorization code for an access token via Slack API
    */
-  async exchangeCodeForToken(code: string): Promise<SlackIntegrationRecord> {
+  async exchangeCodeForToken(code: string, userId: string): Promise<SlackIntegrationRecord> {
     const url = 'https://slack.com/api/oauth.v2.access';
     const params = new URLSearchParams();
     params.append('client_id', env.SLACK_CLIENT_ID || '');
@@ -48,6 +53,7 @@ export const slackService = {
     const now = new Date().toISOString();
     const record: SlackIntegrationRecord = {
       id: `slack_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      user_id: userId,
       team_id: data.team?.id || null,
       team_name: data.team?.name || 'Connected Slack Team',
       access_token: data.access_token || null,
@@ -60,21 +66,25 @@ export const slackService = {
       updated_at: now,
     };
 
-    return await db.saveSlackIntegration(record);
+    return await db.saveSlackIntegration(record, userId);
   },
 
   /**
    * Connect direct credentials (useful for local development, webhooks, or bot tokens)
    */
-  async saveDirectCredentials(data: {
-    webhookUrl?: string;
-    botToken?: string;
-    channel?: string;
-    teamName?: string;
-  }): Promise<SlackIntegrationRecord> {
+  async saveDirectCredentials(
+    data: {
+      webhookUrl?: string;
+      botToken?: string;
+      channel?: string;
+      teamName?: string;
+    },
+    userId: string
+  ): Promise<SlackIntegrationRecord> {
     const now = new Date().toISOString();
     const record: SlackIntegrationRecord = {
       id: `slack_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      user_id: userId,
       team_id: 'manual_connect',
       team_name: data.teamName || 'Development Workspace',
       access_token: data.botToken || null,
@@ -87,21 +97,24 @@ export const slackService = {
       updated_at: now,
     };
 
-    return await db.saveSlackIntegration(record);
+    return await db.saveSlackIntegration(record, userId);
   },
 
   /**
-   * Retrieves active integration from database or falls back to env config
+   * Retrieves active integration from database for the specified user or falls back to env config
    */
-  async getActiveIntegration(): Promise<SlackIntegrationRecord | null> {
-    const fromDb = await db.getSlackIntegration();
-    if (fromDb && fromDb.is_active) {
-      return fromDb;
+  async getActiveIntegration(userId?: string): Promise<SlackIntegrationRecord | null> {
+    if (userId) {
+      const fromDb = await db.getSlackIntegration(userId);
+      if (fromDb && fromDb.is_active) {
+        return fromDb;
+      }
     }
 
     if (env.SLACK_WEBHOOK_URL || env.SLACK_BOT_TOKEN) {
       return {
         id: 'env_slack',
+        user_id: null,
         team_id: 'env',
         team_name: 'Environment Configured Workspace',
         access_token: env.SLACK_BOT_TOKEN || null,
@@ -127,7 +140,7 @@ export const slackService = {
     destination?: string;
     error?: string;
   }> {
-    const integration = await this.getActiveIntegration();
+    const integration = await this.getActiveIntegration(details.userId || undefined);
 
     const textFallback = `🚨 *ReachInbox Rate Limit Alert*: Sender *${details.senderName}* has exceeded the hourly limit of ${details.maxLimit}/hr. Email ${details.emailId} deferred to next window (${details.nextHourIso}).`;
 
