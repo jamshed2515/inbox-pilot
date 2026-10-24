@@ -30,18 +30,19 @@ class MailerService {
 
   private async initTransporter(): Promise<void> {
     try {
-      // Check if custom SMTP is defined in env
+      // Check if custom SMTP is defined in env (e.g. Brevo on port 2525 in Render production)
       if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+        const port = Number(process.env.SMTP_PORT) || 2525;
         this.transporter = nodemailer.createTransport({
           host: process.env.SMTP_HOST,
-          port: Number(process.env.SMTP_PORT) || 587,
-          secure: process.env.SMTP_SECURE === 'true',
+          port,
+          secure: process.env.SMTP_SECURE === 'true' || port === 465,
           auth: {
             user: process.env.SMTP_USER,
             pass: process.env.SMTP_PASS,
           },
         });
-        console.log('📧 Configured custom SMTP email transporter');
+        console.log(`📧 Configured custom SMTP email transporter (${process.env.SMTP_HOST}:${port})`);
         return;
       }
 
@@ -109,13 +110,31 @@ class MailerService {
   ): Promise<SendEmailResult> {
     const transporter = await this.getTransporterForSender(sender);
 
-    const fromHeader = sender
-      ? `"${sender.name}" <${sender.email}>`
-      : options.from ||
-        process.env.SMTP_FROM ||
+    const isCustomSmtp = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+    const verifiedFrom = process.env.SMTP_FROM || process.env.SMTP_USER;
+
+    let fromHeader: string;
+    let replyTo: string | undefined = undefined;
+
+    if (sender) {
+      if (sender.smtp_host && sender.smtp_user) {
+        // Sender has individual custom SMTP configuration
+        fromHeader = `"${sender.name}" <${sender.email}>`;
+      } else if (isCustomSmtp && verifiedFrom) {
+        // Shared relay (e.g. Brevo) requires the From address to match the verified account email.
+        // Maintain sender display name and route replies back to sender.email via Reply-To.
+        fromHeader = `"${sender.name}" <${verifiedFrom}>`;
+        replyTo = sender.email;
+      } else {
+        fromHeader = `"${sender.name}" <${sender.email}>`;
+      }
+    } else {
+      fromHeader = options.from ||
+        (isCustomSmtp && verifiedFrom ? verifiedFrom : undefined) ||
         (this.etherealAccount
           ? `"ReachInbox Scheduler" <${this.etherealAccount.user}>`
           : '"ReachInbox Scheduler" <no-reply@reachinbox.ai>');
+    }
 
     const isHtml = options.body.includes('<') && options.body.includes('>');
 
@@ -125,6 +144,7 @@ class MailerService {
       subject: options.subject,
       text: isHtml ? undefined : options.body,
       html: isHtml ? options.body : undefined,
+      replyTo,
     });
 
     const previewUrl = nodemailer.getTestMessageUrl(info) || null;

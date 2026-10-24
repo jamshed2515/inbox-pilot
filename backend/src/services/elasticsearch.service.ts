@@ -4,11 +4,21 @@ import { EmailRecord, db } from '../config/db';
 
 const INDEX_NAME = env.ELASTICSEARCH_INDEX || 'emails';
 
-export const esClient = new Client({
-  node: env.ELASTICSEARCH_NODE,
-  maxRetries: 3,
-  requestTimeout: 5000,
-});
+const isEsDisabled =
+  env.ELASTICSEARCH_ENABLED === false ||
+  (env.NODE_ENV === 'production' &&
+    (!env.ELASTICSEARCH_NODE ||
+      env.ELASTICSEARCH_NODE.includes('127.0.0.1') ||
+      env.ELASTICSEARCH_NODE.includes('localhost')) &&
+    env.ELASTICSEARCH_ENABLED !== true);
+
+export const esClient = isEsDisabled
+  ? null
+  : new Client({
+      node: env.ELASTICSEARCH_NODE,
+      maxRetries: 3,
+      requestTimeout: 5000,
+    });
 
 let isEsConnected = false;
 
@@ -17,6 +27,12 @@ let isEsConnected = false;
  * and creates the 'emails' index with full-text mappings if it does not exist.
  */
 export const initElasticsearch = async (): Promise<boolean> => {
+  if (isEsDisabled || !esClient) {
+    isEsConnected = false;
+    console.log('ℹ️ Elasticsearch is disabled or unconfigured in production. Operating in resilient PostgreSQL mode.');
+    return false;
+  }
+
   try {
     const health = await esClient.cluster.health({});
     isEsConnected = true;
@@ -87,6 +103,9 @@ export const elasticsearchService = {
    * Gracefully catches and logs errors so PostgreSQL data is never lost.
    */
   async indexEmail(email: EmailRecord): Promise<boolean> {
+    if (!isEsConnected || !esClient) {
+      return false;
+    }
     try {
       await esClient.index({
         index: INDEX_NAME,
@@ -121,6 +140,9 @@ export const elasticsearchService = {
    * Supports 'processing', 'sent', 'failed', 'cancelled' status updates.
    */
   async updateEmailStatus(id: string, updates: Partial<EmailRecord>): Promise<boolean> {
+    if (!isEsConnected || !esClient) {
+      return false;
+    }
     try {
       const updatedAt = new Date().toISOString();
       await esClient.update({
@@ -145,6 +167,9 @@ export const elasticsearchService = {
    * Retrieve a specific email document from Elasticsearch by ID.
    */
   async getEmailDocument(id: string): Promise<EmailRecord | null> {
+    if (!isEsConnected || !esClient) {
+      return null;
+    }
     try {
       const res = await esClient.get<EmailRecord>({
         index: INDEX_NAME,
@@ -166,6 +191,10 @@ export const elasticsearchService = {
    * Falls back to PostgreSQL search if Elasticsearch is temporarily unavailable.
    */
   async searchEmails(searchTerm: string): Promise<{ data: EmailRecord[]; source: 'elasticsearch' | 'postgresql' }> {
+    if (!isEsConnected || !esClient) {
+      const pgResults = await db.searchEmails(searchTerm);
+      return { data: pgResults, source: 'postgresql' };
+    }
     try {
       const response = await esClient.search<EmailRecord>({
         index: INDEX_NAME,

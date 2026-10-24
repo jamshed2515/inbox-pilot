@@ -18,7 +18,8 @@ export const getGoogleAuthUrl = async (req: Request, res: Response): Promise<voi
       return;
     }
 
-    const url = authService.getGoogleAuthUrl();
+    const state = authService.generateOAuthState();
+    const url = authService.getGoogleAuthUrl(state);
     res.json({
       success: true,
       url,
@@ -43,7 +44,8 @@ export const redirectToGoogle = (req: Request, res: Response): void => {
   }
 
   try {
-    const url = authService.getGoogleAuthUrl();
+    const state = authService.generateOAuthState();
+    const url = authService.getGoogleAuthUrl(state);
     res.redirect(url);
   } catch (err: any) {
     res.redirect(`${env.CLIENT_URL}/?auth_error=${encodeURIComponent(err.message)}`);
@@ -53,10 +55,33 @@ export const redirectToGoogle = (req: Request, res: Response): void => {
 export const handleGoogleCallback = async (req: Request, res: Response): Promise<void> => {
   const code = req.query.code as string;
   const error = req.query.error as string;
+  const state = req.query.state as string;
 
-  if (error || !code) {
-    console.error('⚠️ [Auth] Google OAuth callback error or cancelled:', error);
-    res.redirect(`${env.CLIENT_URL}/?auth_error=${encodeURIComponent(error || 'missing_authorization_code')}`);
+  // Handle user cancelled consent or OAuth provider error
+  if (error) {
+    console.warn('⚠️ [Auth] Google OAuth authorization error/cancelled by user:', error);
+    const userMsg =
+      error === 'access_denied'
+        ? 'Google Sign-In was cancelled by the user.'
+        : `Google authorization failed: ${error}`;
+    res.redirect(`${env.CLIENT_URL}/?auth_error=${encodeURIComponent(userMsg)}`);
+    return;
+  }
+
+  if (!code) {
+    console.warn('⚠️ [Auth] Google OAuth callback missing code');
+    res.redirect(`${env.CLIENT_URL}/?auth_error=${encodeURIComponent('Missing authorization code from Google.')}`);
+    return;
+  }
+
+  // Validate OAuth state to prevent CSRF and replay attacks
+  if (!state || !authService.verifyOAuthState(state)) {
+    console.warn('⚠️ [Auth] Google OAuth callback invalid or expired state parameter');
+    res.redirect(
+      `${env.CLIENT_URL}/?auth_error=${encodeURIComponent(
+        'Invalid or expired OAuth state parameter. Please try logging in again.'
+      )}`
+    );
     return;
   }
 

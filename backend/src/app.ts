@@ -8,9 +8,32 @@ import { errorHandler } from './middlewares/errorHandler';
 const app: Application = express();
 
 // Global Middlewares
+const allowedOrigins = ['http://localhost:5173', 'http://localhost:3000'];
+
 app.use(
   cors({
-    origin: env.CLIENT_URL,
+    origin: (requestOrigin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
+      if (!requestOrigin) {
+        return callback(null, true);
+      }
+
+      const configuredOrigins = (env.CLIENT_URL || '')
+        .split(',')
+        .map((o) => o.trim().replace(/\/+$/, ''))
+        .filter(Boolean);
+
+      const isAllowed =
+        configuredOrigins.includes(requestOrigin) ||
+        allowedOrigins.includes(requestOrigin) ||
+        /^https:\/\/.*\.vercel\.app$/.test(requestOrigin);
+
+      if (isAllowed) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    },
     credentials: true,
   })
 );

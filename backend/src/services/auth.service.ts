@@ -36,10 +36,52 @@ export const authService = {
       'placeholder',
       'xxx',
     ];
-    if (placeholders.some((p) => clientId.toLowerCase().includes(p))) {
+    if (
+      placeholders.some(
+        (p) => clientId.toLowerCase().includes(p) || clientSecret.toLowerCase().includes(p)
+      )
+    ) {
       return false;
     }
     return true;
+  },
+
+  /**
+   * Generates a signed, tamper-proof state token containing timestamp and entropy.
+   * Prevents CSRF attacks without requiring session storage.
+   */
+  generateOAuthState(): string {
+    const timestamp = Date.now().toString();
+    const entropy = crypto.randomBytes(16).toString('hex');
+    const data = `${timestamp}:${entropy}`;
+    const hmac = crypto.createHmac('sha256', env.JWT_SECRET).update(data).digest('hex');
+    return `${data}:${hmac}`;
+  },
+
+  /**
+   * Validates state parameter: checks HMAC signature and ensures state hasn't expired (15 min window)
+   */
+  verifyOAuthState(state: string | undefined | null): boolean {
+    if (!state || typeof state !== 'string') return false;
+    const parts = state.split(':');
+    if (parts.length !== 3) return false;
+    const [timestampStr, entropy, signature] = parts;
+    const timestamp = parseInt(timestampStr, 10);
+    if (isNaN(timestamp)) return false;
+
+    // Check expiration: 15 minutes (900,000 ms)
+    const maxAge = 15 * 60 * 1000;
+    if (Date.now() - timestamp > maxAge || timestamp > Date.now() + 60000) {
+      return false;
+    }
+
+    const data = `${timestampStr}:${entropy}`;
+    const expectedHmac = crypto.createHmac('sha256', env.JWT_SECRET).update(data).digest('hex');
+
+    const sigBuffer = Buffer.from(signature, 'hex');
+    const expectedBuffer = Buffer.from(expectedHmac, 'hex');
+    if (sigBuffer.length !== expectedBuffer.length) return false;
+    return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
   },
 
   /**
@@ -115,7 +157,7 @@ export const authService = {
     }
 
     return {
-      googleId: userData.id,
+      googleId: userData.id || userData.sub,
       email: userData.email,
       name: userData.name || userData.email.split('@')[0],
       avatarUrl: userData.picture || undefined,

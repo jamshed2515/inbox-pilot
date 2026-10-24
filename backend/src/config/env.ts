@@ -6,7 +6,7 @@ dotenv.config();
 const envSchema = z.object({
   PORT: z.coerce.number().default(5000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  CLIENT_URL: z.string().default('http://localhost:5173'),
+  CLIENT_URL: z.string().default('http://localhost:5173').transform((val) => val.replace(/\/+$/, '')),
 
   // PostgreSQL
   POSTGRES_HOST: z.string().default('localhost'),
@@ -24,8 +24,22 @@ const envSchema = z.object({
   REDIS_URL: z.string().default('redis://localhost:6379'),
 
   // Elasticsearch
-  ELASTICSEARCH_NODE: z.string().default('http://127.0.0.1:9200'),
+  ELASTICSEARCH_ENABLED: z
+    .preprocess((val) => {
+      if (val === 'false' || val === false || val === '0') return false;
+      if (val === 'true' || val === true || val === '1') return true;
+      return undefined;
+    }, z.boolean().optional()),
+  ELASTICSEARCH_NODE: z.string().optional().default('http://127.0.0.1:9200'),
   ELASTICSEARCH_INDEX: z.string().default('emails'),
+
+  // Custom SMTP Configuration (e.g. Brevo on port 2525 in Render production)
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().optional().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_SECURE: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional(),
+  SMTP_FROM: z.string().optional(),
 
   // Rate Limiting & Concurrency
   WORKER_CONCURRENCY: z.coerce.number().default(5),

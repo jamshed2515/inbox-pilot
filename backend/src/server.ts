@@ -82,8 +82,10 @@ const startServer = async () => {
       console.log('Closing Redis connection...');
       await redisConnection.quit();
 
-      console.log('Closing Elasticsearch connection...');
-      await esClient.close();
+      if (esClient) {
+        console.log('Closing Elasticsearch connection...');
+        await esClient.close().catch(() => {});
+      }
 
       console.log('Closing PostgreSQL pool...');
       await pgPool.end();
