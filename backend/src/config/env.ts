@@ -34,7 +34,7 @@ const envSchema = z.object({
   ELASTICSEARCH_INDEX: z.string().default('emails'),
 
   // Email Provider & SMTP Configuration
-  EMAIL_PROVIDER: z.enum(['ethereal', 'brevo', 'custom']).default('ethereal'),
+  EMAIL_PROVIDER: z.enum(['ethereal', 'brevo']).default('ethereal'),
   ETHEREAL_USER: z.string().optional(),
   ETHEREAL_PASS: z.string().optional(),
   SMTP_HOST: z.string().optional(),
@@ -63,7 +63,18 @@ const envSchema = z.object({
   GOOGLE_REDIRECT_URI: z.string().default('http://localhost:5000/api/auth/google/callback'),
   JWT_SECRET: z.string().default('reachinbox_email_scheduler_jwt_secret_key_2026'),
   JWT_EXPIRES_IN: z.string().default('7d'),
-});
+}).refine(
+  (data) => {
+    if (data.EMAIL_PROVIDER === 'brevo') {
+      return Boolean(data.SMTP_HOST && data.SMTP_USER && data.SMTP_PASS);
+    }
+    return true;
+  },
+  {
+    message: "EMAIL_PROVIDER is set to 'brevo', but SMTP_HOST, SMTP_USER, or SMTP_PASS is missing in environment variables.",
+    path: ['EMAIL_PROVIDER'],
+  }
+);
 
 const parsedEnv = envSchema.safeParse(process.env);
 

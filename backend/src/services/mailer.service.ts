@@ -30,38 +30,42 @@ class MailerService {
 
   private async initTransporter(): Promise<void> {
     try {
-      const emailProvider = (process.env.EMAIL_PROVIDER || 'ethereal').toLowerCase();
+      const emailProvider = env.EMAIL_PROVIDER;
 
-      // Check if custom / Brevo SMTP is explicitly opted into via EMAIL_PROVIDER=brevo or custom
-      if (emailProvider === 'brevo' || emailProvider === 'custom') {
-        if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-          const defaultPort = process.env.SMTP_HOST.includes('brevo.com') ? 2525 : 587;
-          const port = Number(process.env.SMTP_PORT) || defaultPort;
-
-          this.transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port,
-            secure: process.env.SMTP_SECURE === 'true' || port === 465,
-            auth: {
-              user: process.env.SMTP_USER,
-              pass: process.env.SMTP_PASS,
-            },
-            pool: true,
-            maxConnections: 5,
-            maxMessages: 100,
-            connectionTimeout: 10000,
-            greetingTimeout: 10000,
-            socketTimeout: 15000,
-          });
-          console.log(`📧 Configured custom/Brevo SMTP email transporter (${process.env.SMTP_HOST}:${port}) with pooled connections`);
-
-          this.transporter
-            .verify()
-            .then(() => console.log(`✅ [SMTP] Relay connection verified (${process.env.SMTP_HOST}:${port})`))
-            .catch((err) => console.warn(`⚠️ [SMTP] Relay verification warning: ${err.message}`));
-
-          return;
+      // 1. Explicit Brevo SMTP provider (e.g. for Render Free on port 2525)
+      if (emailProvider === 'brevo') {
+        if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+          throw new Error(
+            `EMAIL_PROVIDER is configured as 'brevo', but required credentials (SMTP_HOST, SMTP_USER, SMTP_PASS) are missing.`
+          );
         }
+
+        const defaultPort = process.env.SMTP_HOST.includes('brevo.com') ? 2525 : 587;
+        const port = Number(process.env.SMTP_PORT) || defaultPort;
+
+        this.transporter = nodemailer.createTransport({
+          host: process.env.SMTP_HOST,
+          port,
+          secure: process.env.SMTP_SECURE === 'true' || port === 465,
+          auth: {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS,
+          },
+          pool: true,
+          maxConnections: 5,
+          maxMessages: 100,
+          connectionTimeout: 10000,
+          greetingTimeout: 10000,
+          socketTimeout: 15000,
+        });
+        console.log(`📧 Configured Brevo SMTP email transporter (${process.env.SMTP_HOST}:${port}) with pooled connections`);
+
+        this.transporter
+          .verify()
+          .then(() => console.log(`✅ [SMTP] Brevo relay connection verified (${process.env.SMTP_HOST}:${port})`))
+          .catch((err) => console.warn(`⚠️ [SMTP] Brevo relay verification warning: ${err.message}`));
+
+        return;
       }
 
       // Assignment Primary / Default: Ethereal Fake SMTP
@@ -173,12 +177,7 @@ class MailerService {
   ): Promise<SendEmailResult> {
     const transporter = await this.getTransporterForSender(sender);
 
-    const isCustomSmtp = Boolean(
-      (process.env.EMAIL_PROVIDER === 'brevo' || process.env.EMAIL_PROVIDER === 'custom') &&
-      process.env.SMTP_HOST &&
-      process.env.SMTP_USER &&
-      process.env.SMTP_PASS
-    );
+    const isBrevo = env.EMAIL_PROVIDER === 'brevo';
     const verifiedFrom = process.env.SMTP_FROM || process.env.SMTP_USER;
 
     let fromHeader: string;
@@ -188,7 +187,7 @@ class MailerService {
       if (sender.smtp_host && sender.smtp_user) {
         // Sender has individual custom SMTP configuration
         fromHeader = `"${sender.name}" <${sender.email}>`;
-      } else if (isCustomSmtp && verifiedFrom) {
+      } else if (isBrevo && verifiedFrom) {
         // Shared relay (e.g. Brevo) requires the From address to match the verified account email.
         // Maintain sender display name and route replies back to sender.email via Reply-To.
         fromHeader = `"${sender.name}" <${verifiedFrom}>`;
@@ -198,7 +197,7 @@ class MailerService {
       }
     } else {
       fromHeader = options.from ||
-        (isCustomSmtp && verifiedFrom ? verifiedFrom : undefined) ||
+        (isBrevo && verifiedFrom ? verifiedFrom : undefined) ||
         (this.etherealAccount
           ? `"ReachInbox Scheduler" <${this.etherealAccount.user}>`
           : '"ReachInbox Scheduler" <scheduler@ethereal.email>');
@@ -215,7 +214,8 @@ class MailerService {
       replyTo,
     });
 
-    const testUrl = nodemailer.getTestMessageUrl(info);
+    // Preview URL only generated for Ethereal sandbox; Brevo delivers real emails (no fake URL created)
+    const testUrl = isBrevo ? null : nodemailer.getTestMessageUrl(info);
     const previewUrl = testUrl ? String(testUrl) : null;
 
     return {
@@ -247,14 +247,25 @@ class MailerService {
     };
   }
 
+  public async ensureReady(): Promise<void> {
+    if (this.initializing) {
+      await this.initializing;
+    }
+  }
+
   public async sendMail(options: SendEmailOptions): Promise<SendEmailResult> {
     return this.sendMailFromSender(null, options);
   }
 
   public getAccountInfo() {
+    const isBrevo = env.EMAIL_PROVIDER === 'brevo';
     return {
-      type: this.etherealAccount ? 'ethereal' : 'custom',
-      user: this.etherealAccount ? this.etherealAccount.user : process.env.SMTP_USER || 'configured',
+      type: isBrevo ? 'brevo' : 'ethereal',
+      user: isBrevo
+        ? process.env.SMTP_USER || 'configured'
+        : this.etherealAccount
+        ? this.etherealAccount.user
+        : 'provisioning',
       configuredSendersCount: this.senderTransporters.size,
     };
   }

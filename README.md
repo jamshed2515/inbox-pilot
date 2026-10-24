@@ -550,7 +550,8 @@ npm --prefix frontend run build
 ## 15. Limitations / Demo Notes
 
 - **Google OAuth Credentials**: Real Google OAuth requires registering an OAuth 2.0 Client ID in the Google Cloud Console with the redirect URI `http://localhost:5000/api/auth/google/callback`. For instant review without Google Cloud setup, use **One-Click Demo Google Login**.
-- **Ethereal Sandbox Transport**: Nodemailer uses Ethereal Email to generate preview URLs. These emails are safely captured in the sandbox and are not sent to real recipient inboxes.
+- **Ethereal Sandbox Transport (Local Development & Evaluator Default)**: By default (`EMAIL_PROVIDER=ethereal`), Nodemailer provisions an Ethereal Email sandbox test account to generate genuine preview URLs. These messages are trapped in the sandbox and do NOT reach real recipient inboxes.
+- **Render Free Production Deployment (Brevo on Port 2525)**: Render Free Web Services block outbound TCP on ports 25, 465, and 587. In production on Render Free, `EMAIL_PROVIDER=brevo` is configured with Brevo SMTP on unblocked port `2525` to deliver real emails to recipient inboxes with high reliability and zero port timeouts.
 - **Host Port 5433**: PostgreSQL runs on host port `5433` (mapped to container port `5432`) to avoid collisions with any local PostgreSQL service on the developer's workstation.
 
 ---
