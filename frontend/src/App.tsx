@@ -1010,10 +1010,10 @@ export default function App() {
               <Sparkles className="w-4 h-4 text-teal-400" />
             </div>
             <div className="mt-2 text-sm font-semibold text-white truncate">
-              Ethereal Test Mail
+              {stats?.mailer?.type === 'custom' ? 'Custom SMTP Relay' : 'Ethereal Test Mail'}
             </div>
             <div className="text-[11px] text-slate-400 mt-1 truncate font-mono">
-              {stats?.mailer.user || 'Auto-Provisioned'}
+              {stats?.mailer?.user || 'Auto-Provisioned'}
             </div>
           </div>
         </div>
@@ -1508,9 +1508,9 @@ export default function App() {
                           {/* Actions */}
                           <td className="py-3.5 px-4 text-right space-x-2 whitespace-nowrap">
                             {/* Ethereal Preview Button */}
-                            {item.preview_url ? (
+                            {(item.preview_url || (item as any).previewUrl) ? (
                               <a
-                                href={item.preview_url}
+                                href={item.preview_url || (item as any).previewUrl}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border border-teal-500/30 text-xs font-semibold transition"
@@ -2257,9 +2257,9 @@ export default function App() {
             <div className="space-y-2">
               <div className="text-xs text-slate-400 flex items-center justify-between">
                 <span>Message Body Preview</span>
-                {previewEmail.preview_url && (
+                {(previewEmail.preview_url || (previewEmail as any).previewUrl) && (
                   <a
-                    href={previewEmail.preview_url}
+                    href={previewEmail.preview_url || (previewEmail as any).previewUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1 text-teal-400 hover:underline"

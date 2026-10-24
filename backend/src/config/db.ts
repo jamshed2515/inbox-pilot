@@ -114,7 +114,7 @@ export const initDb = async (): Promise<void> => {
       CREATE INDEX IF NOT EXISTS idx_emails_created_at ON emails(created_at DESC);
     `);
 
-    // 3. Ensure sender_id column and index exist in existing emails table
+    // 3. Ensure sender_id and preview_url columns exist in existing emails table
     await client.query(`
       DO $$ BEGIN
         IF NOT EXISTS (
@@ -122,6 +122,13 @@ export const initDb = async (): Promise<void> => {
           WHERE table_name='emails' AND column_name='sender_id'
         ) THEN
           ALTER TABLE emails ADD COLUMN sender_id VARCHAR(64) REFERENCES email_senders(id) ON DELETE SET NULL;
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name='emails' AND column_name='preview_url'
+        ) THEN
+          ALTER TABLE emails ADD COLUMN preview_url TEXT;
         END IF;
       END $$;
       CREATE INDEX IF NOT EXISTS idx_emails_sender_id ON emails(sender_id);
